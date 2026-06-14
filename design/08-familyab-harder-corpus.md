@@ -192,6 +192,14 @@ source text) unless flagged. Numbers reference the study-swarm lanes.
 - **Problem source → LiveCodeBench (primary, MIT) + BigCodeBench (secondary, Apache-2.0)**, replacing the
   contaminated QuixBugs/authored seed in `_familygen_problems.py`. Hidden tests are EvalPlus-grade
   (finding 12), wired into `ProblemSpec.test_code`. BigCodeBench ⇒ containerized labeler (finding 13).
+  - ✅ **Wave 2a DONE** — `eval/bigcodebench.py` + `eval/livecodebench.py` (HF loaders, lazy `datasets`
+    [bench], ANDON column validation, offline fixtures, content-hash; both schemas source-verified
+    2026-06-14). Each row → a `ProblemSpec` whose `test_code` satisfies the existing sandbox
+    `check(candidate)` contract (BigCodeBench: wrap the unittest class; LiveCodeBench: bake pre-parsed
+    `(args, expected)` cases). **LiveCodeBench STDIN problems are DEFERRED** (functional-only kept) — a
+    whole-program stdin/stdout harness is a separate build; the loader records the skipped stdin count.
+    LCB date-window + `contest_date` holdout implemented. `datasets<4` pin is load-bearing (LCB is a
+    `trust_remote_code` script dataset; `datasets>=4` removes scripts).
 - **Identical-error-injection deconfounder stratum** (finding 4, must-fix 1): embed ONE fixed,
   execution-verified bug into EACH family's clean generation of the same problem — vary only the
   surrounding family style, hold the defect constant. Isolates family self-preference from
