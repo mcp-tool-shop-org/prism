@@ -254,23 +254,25 @@ source text) unless flagged. Numbers reference the study-swarm lanes.
 
 ---
 
-## Build plan (proposed waves, for director review)
+## Build plan (status on `feat/familyab-harder-corpus` — 10 commits, all gated; 737 tests)
 
-0. **Verify-current-state** (cheap): confirm the corrected file mapping in source, snapshot the
-   `familygen`/`familyab` interfaces the build extends. (Largely done in this session.)
-1. **Sourcing + labeler**: LiveCodeBench/BigCodeBench ingestion into `familygen` + containerized,
-   N-run-deterministic execution labeler + per-family date windows + contamination preflight.
-2. **Defects**: natural-majority sourcing + the identical-error-injection deconfounder + equivalent-mutant
-   determinism filter + perplexity covariate.
-3. **Estimator hardening**: wild cluster bootstrap + min-cluster gate + TOST + BY-FDR;
-   disjoint calibration/estimation slices.
-4. **`prism eval --round-robin` CLI** (objective #2): build/load the family-AB corpus → per-family bypass
-   engines (in `cli/main.py`, `allow_same_family`, per the Knight-Capital guard) →
+0. ✅ **Verify-current-state** — corrected the sycophancy-path conflation; mapping locked to
+   `eval/familyab` + `eval/metrics`.
+1. ✅ **Sourcing + labeler** — `eval/bigcodebench` + `eval/livecodebench` loaders (real-data validated);
+   containerized labeler (`eval/container_sandbox` + `eval/docker/labeler.Dockerfile`, route-by-libs).
+2. ✅ **Defects** — natural-majority sourcing + the faithful identical-error-injection deconfounder
+   (failing-test-signature match) + perplexity covariate + ModuleNotFoundError-skip.
+3. ✅ **Estimator hardening** — min-cluster gate + TOST + BY-FDR (wild-bootstrap deferred; gate is the
+   operative small-cluster protection).
+4. ⏳ **`prism eval --round-robin` CLI** (objective #2): build/load the family-AB corpus → per-family
+   bypass engines (in `cli/main.py`, `allow_same_family`, per the Knight-Capital guard) →
    `familyab.run_round_robin` → `compute_self_preference` → report section + signed run-receipt → publish
-   to `eval/RESULTS.md`. (Can be built against the existing corpus first to make the *pilot* reproducible,
-   then re-pointed at the harder corpus.)
-5. **Pre-register + RUN + publish**: pin the pre-registration block in `RESULTS.md`, run the round-robin
-   on the harder corpus (local families + cloud seat, free), publish the real number / equivalence bound.
+   to `eval/RESULTS.md`.
+5. ⏳ **Pre-register + RUN + publish**: pin the pre-registration block in `RESULTS.md`, run the
+   round-robin on the harder corpus (local families + cloud seat, free), publish the number / bound.
+
+Validation in progress: a REAL-model end-to-end smoke (generate → label → deconfound on local
+families over LCB-functional problems) + the Docker labeler image build, before wiring the CLI.
 
 Each wave: build + `uv run python -m {ruff,mypy,pytest}` green; tests ship test-first; line-length 100;
 mypy --strict.
