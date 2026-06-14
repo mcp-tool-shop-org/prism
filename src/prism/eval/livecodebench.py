@@ -105,11 +105,16 @@ def _jsonify(value: object) -> object:
     return value
 
 
-def build_cases(public_blob: str, private_blob: str) -> list[dict[str, object]]:
+def build_cases(
+    public_blob: str, private_blob: str, *, max_cases: int = 50
+) -> list[dict[str, object]]:
     """Parse the functional public+private tests into ``[{"args": [...], "expected": ...}]`` at load time.
 
     Each test's ``input`` is newline-separated per-argument JSON literals; ``output`` is the expected
     return. Parsing here (not in the generated check) keeps the intricate arg-decoding unit-testable.
+    PUBLIC tests come first and are always kept (up to the cap); ``max_cases`` then bounds the total —
+    real LCB problems can carry HUNDREDS of private cases (observed: 3 MB of baked test_code), which a
+    representative subset reliably labels clean/buggy without ballooning the corpus + content-hash.
     """
     raw = list(json.loads(public_blob)) + decode_private_tests(private_blob)
     cases: list[dict[str, object]] = []
@@ -119,6 +124,8 @@ def build_cases(public_blob: str, private_blob: str) -> list[dict[str, object]]:
         lines = [ln for ln in str(t["input"]).split("\n") if ln.strip() != ""]
         args = [_jsonify(_parse_arg(ln)) for ln in lines]
         cases.append({"args": args, "expected": _jsonify(_parse_expected(str(t["output"])))})
+        if len(cases) >= max_cases:
+            break
     return cases
 
 
@@ -139,7 +146,7 @@ def _build_check_code(func_name: str, cases: list[dict[str, object]]) -> str:
     )
 
 
-def _row_to_spec(row: dict[str, object], *, index: int) -> ProblemSpec | None:
+def _row_to_spec(row: dict[str, object], *, index: int, max_cases: int = 50) -> ProblemSpec | None:
     """Map ONE row to a functional ``ProblemSpec``, or ``None`` if it is a (deferred) stdin problem."""
     for col in _REQUIRED_COLUMNS:
         if col not in row:
@@ -151,7 +158,9 @@ def _row_to_spec(row: dict[str, object], *, index: int) -> ProblemSpec | None:
     func_name = metadata.get("func_name") if isinstance(metadata, dict) else None
     if not func_name:
         return None  # stdin/stdout problem — deferred (needs a whole-program harness, not check())
-    cases = build_cases(str(row["public_test_cases"]), str(row["private_test_cases"]))
+    cases = build_cases(
+        str(row["public_test_cases"]), str(row["private_test_cases"]), max_cases=max_cases
+    )
     if not cases:
         return None  # no usable functional cases
     qid = str(row.get("question_id") or f"{index}")
@@ -194,6 +203,7 @@ def load_livecodebench_offline(
     source: Path = DEFAULT_FIXTURE,
     start_date: str | None = None,
     end_date: str | None = None,
+    max_cases: int = 50,
 ) -> list[ProblemSpec]:
     """Load the committed fixture (no network, no remote code). Functional-only; stdin rows are skipped."""
     source = Path(source)
@@ -210,7 +220,7 @@ def load_livecodebench_offline(
         rowobj = json.loads(line)
         if not isinstance(rowobj, dict):
             raise LCBColumnError(f"fixture line {index} is not a JSON object: {line[:80]!r}")
-        spec = _row_to_spec(rowobj, index=index)
+        spec = _row_to_spec(rowobj, index=index, max_cases=max_cases)
         if spec is None or not _within_window(spec, start_date, end_date):
             continue
         specs.append(spec)
@@ -220,7 +230,11 @@ def load_livecodebench_offline(
 
 
 def _load_hf(
-    version: str, limit: int | None, start_date: str | None, end_date: str | None
+    version: str,
+    limit: int | None,
+    start_date: str | None,
+    end_date: str | None,
+    max_cases: int,
 ) -> list[ProblemSpec]:
     """ONLINE path: lazy-import ``datasets``, run the dataset's loading script, keep functional rows."""
     try:
@@ -235,7 +249,7 @@ def _load_hf(
     ds = load_dataset(HF_DATASET, split="test", version_tag=version, trust_remote_code=True)
     specs: list[ProblemSpec] = []
     for index, row in enumerate(ds):
-        spec = _row_to_spec(dict(row), index=index)
+        spec = _row_to_spec(dict(row), index=index, max_cases=max_cases)
         if spec is None or not _within_window(spec, start_date, end_date):
             continue
         specs.append(spec)
@@ -252,20 +266,22 @@ def load_livecodebench(
     fixture: Path = DEFAULT_FIXTURE,
     start_date: str | None = None,
     end_date: str | None = None,
+    max_cases: int = 50,
 ) -> list[ProblemSpec]:
     """Load LiveCodeBench FUNCTIONAL problems as ``ProblemSpec``s (stdin problems are skipped).
 
     ``offline=True`` reads the committed fixture. Otherwise the HF online path runs the dataset's loading
     script (``version_tag``, ``trust_remote_code=True`` — needs ``datasets<4``). ``start_date`` /
     ``end_date`` (YYYY-MM-DD) apply the contest-date holdout — set ``start_date`` after a family's cutoff.
+    ``max_cases`` bounds the baked test cases per problem (real LCB problems can carry MBs of tests).
     """
     if offline:
         return load_livecodebench_offline(
-            limit, source=fixture, start_date=start_date, end_date=end_date
+            limit, source=fixture, start_date=start_date, end_date=end_date, max_cases=max_cases
         )
     if version not in LCB_VERSIONS:
         raise ValueError(f"unknown LiveCodeBench version {version!r}; expected one of {LCB_VERSIONS}")
-    return _load_hf(version, limit, start_date, end_date)
+    return _load_hf(version, limit, start_date, end_date, max_cases)
 
 
 def livecodebench_content_hash(specs: list[ProblemSpec]) -> str:

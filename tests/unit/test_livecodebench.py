@@ -65,6 +65,13 @@ def test_build_cases_jsonifies_tuple_fallback() -> None:
     assert cases == [{"args": [[1, 2]], "expected": [1, 2]}]
 
 
+def test_max_cases_caps_baked_tests() -> None:
+    # real LCB problems can bake MBs of tests; the cap keeps test_code bounded (public kept first)
+    many = [{"input": f"[{i}]", "output": str(i), "testtype": "functional"} for i in range(200)]
+    built = build_cases(json.dumps(many[:2]), json.dumps(many[2:]), max_cases=10)
+    assert len(built) == 10
+
+
 def test_check_synthesis_labels_correct_and_buggy_via_sandbox() -> None:
     spec = load_livecodebench_offline()[0]  # Solution.sumList(nums)
     good = run_candidate(
