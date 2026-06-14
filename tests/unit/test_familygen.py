@@ -213,6 +213,7 @@ async def test_deconfounder_keeps_same_bug_drops_different(tmp_path: Path) -> No
     kept_families = {prov[s["id"]] for s in deconf}
     assert kept_families == {"f1", "f2"}  # matching-sig restyles kept; f3 (diff bug) dropped
     assert all(s["positive"] is True for s in deconf)
+    assert manifest["deconfound_eligible_problems"] == 1  # all 3 families solved the one problem
 
 
 async def test_deconfounder_off_emits_no_deconfound_samples(tmp_path: Path) -> None:

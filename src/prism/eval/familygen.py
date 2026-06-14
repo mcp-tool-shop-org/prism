@@ -467,6 +467,10 @@ async def build_family_corpus(
         "n_problems": len(problems),
         "n_samples": len(samples),
         "n_positive": sum(1 for s in samples if s.positive),
+        # Deconfound-stratum diagnostic: problems where >=2 families produced a CLEAN gen (eligible
+        # for the shared-bug restyle). Low vs n_problems => the mix was too hard; pull in more
+        # easy/medium problems (see eval/problem_select).
+        "deconfound_eligible_problems": sum(1 for fc in clean_gens.values() if len(fc) >= 2),
         "counts_by_family": {fam: dict(c) for fam, c in per_family.items()},
         # PROVENANCE SIDECAR: sample_id -> producing family. The A/B harness groups by this to form
         # the within-judge self-vs-cross contrast; it lives here, NOT in the frozen Sample schema.
