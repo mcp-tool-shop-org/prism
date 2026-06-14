@@ -24,7 +24,7 @@ Lock 1 routes verification to the local family) · `--split all` (111 samples: c
 | …but contract↔invariant Cohen kappa | **0.717** — those two lenses are strongly *correlated* (the real redundancy) |
 | Union coverage recall / coverage gain | **1.00 / 0** — the union does NOT beat the best single lens (invariant) here |
 | Data-calibrated rho operating point | **n/a** — finding-set rho is 0.0 for every pair (degenerate sweep) |
-| Same-family A/B delta (Lock 1) | not run (needs a 2nd family configured — local-verifier specialist or a hosted key) |
+| Same-family A/B delta (Lock 1) | **−0.030, 95% CI [−0.19, +0.13]** (n=33; family-different 0.697 vs same-family 0.727) — a confounded null; see the section below |
 | Overall verdict accuracy / ECE / Brier | **0.667** / 0.241 / 0.269 |
 | Contaminated (public/QuixBugs) vs uncontaminated accuracy | **0.560 (n=50) [ceiling] vs 0.754 (n=61) [honest]; delta 0.194** |
 
@@ -89,14 +89,35 @@ to ESCALATE. A precision pass on the citation-clean path is the clearest citatio
 6. **The rho-threshold sweep is degenerate** (all rho = 0), so 0.25 cannot be validated or
    recalibrated from this corpus — itself the evidence for finding #1. The runtime default stays 0.25.
 
-## Same-family A/B (Lock 1) — machinery verified, real delta pending
+## Same-family A/B (Lock 1) — REAL, and an honest null
 
 `prism eval --family-ab` runs a same-family CONTROL against the family-different TREATMENT and reports
 a **paired (McNemar) accuracy delta + CI**. A prior bug made the control silently route to
 `VERIFIER_UNAVAILABLE` (delta measured nothing); that is fixed (the control uses a measurement-only,
-default-off `allow_same_family` router bypass). The **offline** machinery proof yields a deterministic
-signed positive delta. A **real** delta needs a 2nd configured family (a `local-verifier` specialist
-endpoint, or a hosted-family key) — director-gated — because both arms must be real models.
+default-off `allow_same_family` router bypass).
+
+**Real run (2026-06-14, n=33 balanced subset):** the cross-family seat is **gpt-oss:120b-cloud**
+(an OpenAI-family model, served via Ollama Cloud's OpenAI-compatible `/v1` — zero per-call cost) as
+the family-different TREATMENT; **mistral-small:24b** (LOCAL) as the same-family CONTROL; caller family
+`local`.
+
+| Arm | Accuracy | Verifier |
+|---|---|---|
+| Family-different (treatment) | **0.697** (23/33) | gpt-oss:120b-cloud (OPENAI) |
+| Same-family (control) | **0.727** (24/33) | mistral-small:24b (LOCAL) |
+| **Delta (different − same)** | **−0.030** | 95% CI **[−0.187, +0.126]** (paired McNemar Wald) |
+
+**Honest reading:** the delta is **indistinguishable from zero** — prism's own measurement does **not**
+independently confirm a family-different *advantage* here. This does NOT refute Lock 1; three real
+limitations bound the result: **(1)** n=33 (a wide CI by construction); **(2)** the two arms differ in
+model capability (gpt-oss 120B vs mistral 24B), so the delta conflates family-difference with model
+size — a directional proxy, not a clean isolation; **(3)** the corpus artifacts are not actually
+*produced* by the caller families, so the self-preference effect Lock 1 guards against (Panickssery
+2024) cannot be fully exercised on a fixed corpus. A clean test needs same-capability cross-family
+arms over family-provenanced artifacts. Until then, Lock 1 stands on the borrowed empirical anchor,
+and prism's own data is — honestly — null. (The CLI path `prism eval --family-ab` still requires a
+2nd *general* configured family; the cloud seat used here was wired via a one-off harness because the
+routing map hardcodes hosted model IDs — see backlog item F-14, configurable routing.)
 
 ## L5 Style/Maintainability lens — ship/defer gate
 
@@ -125,15 +146,22 @@ Reproduce (real): `pip install 'prism-verify[bench]'` then
 smoke (mock verifier, committed fixture — NOT a measurement):
 `prism eval --benchmark codejudgebench --offline`.
 
-The machinery + offline-fixture tests ship now; the headline numbers below need a real verifier run
-(local Ollama zero-cost first pass; hosted for the published headline — director-gated).
+**Real first pass (2026-06-14):** verifier **local Ollama `mistral-small:24b`**, `--bench-task codegen
+--bench-limit 16 --runs 1` (a small, zero-cost first pass; the published headline needs a full-split
+run + ideally a stronger verifier).
 
 | Bucket | Accuracy (95% CI) | Tie-rate | Position consistency |
 |---|---|---|---|
-| overall | (pending real run) | (pending real run) | (pending real run) |
-| codegen | (pending real run) | (pending real run) | (pending real run) |
-| coderepair | (pending real run) | (pending real run) | (pending real run) |
-| testgen | (pending real run) | (pending real run) | (pending real run) |
+| overall (codegen, n=16) | **0.375** [0.185, 0.614] | **0.562** | **1.000** [0.806, 1.000] |
+| codegen | **0.375** [0.185, 0.614] | **0.562** | **1.000** |
+| coderepair | (not yet run) | — | — |
+| testgen | (not yet run) | — | — |
+
+**Honest reading:** mistral-24B is a **weak pairwise discriminator** on code-quality pairs — accuracy
+0.375 is dominated by a **0.562 tie-rate** (it gives the *same* single-artifact verdict to the chosen
+and rejected code more than half the time, counted WRONG). This is genuine non-discrimination, not
+order-bias: **position consistency is a perfect 1.000**. A larger, stronger verifier (e.g. the
+gpt-oss:120b-cloud seat used for the A/B above) would almost certainly tie less — a worthwhile next run.
 
 > The default suite + the offline fixture path need **neither** network **nor** the HF `datasets`
 > lib (the `[bench]` extra). The cap matters: both-orders × N ≥ 3 × 2 sides = up to 12 verify
