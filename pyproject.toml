@@ -89,6 +89,14 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 
+# HF `datasets` (the optional [bench] extra) ships no py.typed marker. CI runs mypy without [bench]
+# (import-not-found, handled by the lazy-import inline ignores), but a local env WITH [bench] installed
+# sees import-untyped instead. This override makes the type-check env-independent — datasets is a
+# genuinely untyped optional dep, lazy-imported behind clear runtime errors.
+[[tool.mypy.overrides]]
+module = ["datasets.*"]
+ignore_missing_imports = true
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100

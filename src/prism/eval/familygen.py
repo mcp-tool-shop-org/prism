@@ -71,6 +71,15 @@ class ProblemSpec:
     intent: str
     entry_point: str
     test_code: str
+    # Optional provenance / execution metadata for EXTERNALLY-sourced problems (LiveCodeBench,
+    # BigCodeBench). Authored seed problems leave these at defaults (frozen interface stays
+    # backward-compatible). ``libs`` = third-party imports the problem needs (lib-bearing problems
+    # route to the containerized labeler); ``contest_date`` drives the per-family post-cutoff
+    # contamination holdout; ``source`` is the provenance label.
+    libs: tuple[str, ...] = ()
+    contest_date: str | None = None
+    difficulty: str = ""
+    source: str = "authored"
 
 
 @dataclass(frozen=True)
