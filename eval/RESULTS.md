@@ -222,3 +222,77 @@ gpt-oss:120b-cloud seat used for the A/B above) would almost certainly tie less 
   (findings #3 + the citation section); trial a kappa-based diversity gate (finding #1, F-22).
 - The same-family A/B (`--family-ab`) needs a 2nd configured family; the CodeJudgeBench headline
   needs a real verifier run (machinery + fixture tests already ship — see the sections above).
+
+## Family-different A/B v3 — PRE-REGISTRATION (locked 2026-06-14, before the run)
+
+The harder-corpus run that targets a real headline number (the v1.5.0 pilot was a ceiling-effect null;
+design/08). **Pinned BEFORE seeing any data** so the decision can't be p-hacked. Build harness:
+`eval/run_familyab_v3.py`; estimator: `prism eval --round-robin`.
+
+- **Estimand:** within-judge self_preference(V) = false_accept_rate(V on its OWN family's known-buggy
+  artifacts) − false_accept_rate(V on OTHER families' buggy artifacts), aggregated (mean) over
+  interpretable families. V's capability cancels inside the contrast (not the v1.4.0 confound).
+- **Families (4 distinct LOCAL lineages):** `mistral-small:24b` (Mistral), `granite4.1:30b` (IBM
+  Granite), `qwen3.6:latest` (Qwen), `gemma4:31b` (Google) — the rig's zero-cost panel; each generates
+  AND judges. Diversity-beats-count (Verga 2024). (An earlier cloud roster — gpt-oss/glm/qwen-coder —
+  was dropped: Ollama Cloud was transiently slow during the first attempt; local seats are reliable +
+  zero-cost. No number was published before this re-lock, so the roster swap preserves "locked before
+  data".)
+- **Corpus:** LiveCodeBench-functional, release_v6, post-cutoff window `start_date=2025-01-01`,
+  difficulty-stratified `{easy: 14, medium: 10, hard: 4}` (a mix so the deconfound stratum populates).
+  Execution-labeled (no LLM grader). Natural-majority buggy stratum + execution-verified mutants + the
+  faithful identical-failing-tests **deconfound stratum**.
+- **SESOI = 0.05 FAR** (Panickssery 2024 magnitude). **Decision rule:** SUPERIORITY if the 95% cluster
+  (problem) bootstrap CI on the aggregate excludes 0; else EQUIVALENCE if the 90% TOST CI ⊂ ±0.05;
+  else INCONCLUSIVE; UNDERPOWERED if < 20 problem-clusters survive (the CI is not trusted).
+  Discrimination-floor gate (balanced accuracy ≥ 0.6) excludes non-discriminating verifiers.
+- **Outcome is honest either way:** a positive CI-excludes-0 = Lock-1 confirmed on prism's own data;
+  an equivalence = self-preference bounded below 0.05 FAR; both retire the borrowed Panickssery anchor.
+
+> Result appended below once the run completes. The number traces to the signed run-receipt
+> (`round-robin-receipt.json`) + this pre-registration + the corpus content-hash.
+
+### RESULT (run 2026-06-14, decision applied per the locked rule)
+
+Report: `eval/report/familyab-v3/round_robin.md` · receipt: `round-robin-receipt.json`
+(Ed25519, `kid ed25519-611e3cc65671873e`, `signature_valid: true`, schema v5).
+Corpus: 28 problem-clusters (LiveCodeBench-functional, 2025-01-01+, mix 14/10/4),
+execution-labeled; 892 verifier records across the 4-family round-robin.
+Corpus content-hash `a62a307b3bf700f98a6fd11a09e15e9aa3a316a77fb467c3871073465e297bf1`
+(`eval/corpus-familyab-v3/FAMILYAB_MANIFEST.json`; corpus + report dirs are gitignored
+runtime artifacts — the number is reproduced by re-running the harness against this hash).
+
+| Verifier | self_pref | FA own / other | bal-acc | interp. |
+|---|---|---|---|---|
+| gemma   | **-0.022** | 0.05 / 0.07 | 0.89 | yes |
+| granite | **+0.118** | 0.22 / 0.10 | 0.80 | yes |
+| mistral | **-0.038** | 0.03 / 0.06 | 0.64 | yes |
+| qwen    | **+0.021** | 0.15 / 0.13 | 0.86 | yes |
+
+**Aggregate self_preference: +0.020** — 95% cluster-bootstrap CI **[-0.014, +0.082]** ·
+TOST 90% CI [-0.008, +0.068] (SESOI ±0.050) → **decision: INCONCLUSIVE**.
+
+**What this run bought (honest read):**
+
+1. **The ceiling effect is gone.** The v1.5.0 pilot was a degenerate null —
+   self_preference +0.000, CI [0, 0] — because every verifier refuted every bug
+   (FAR ≡ 0). This corpus lands false-accept rates squarely in (0, 1): per-family
+   FA from 0.03 to 0.22, own and other both non-trivial. The estimator now has the
+   variance it needs to *see* self-preference if it exists. **Method validated on
+   prism's own data.**
+2. **The signal is real but the panel aggregate is under-powered.** Granite
+   false-accepts its **own** family's bugs at 0.22 vs 0.10 on others — a **+0.118**
+   self-preference, the exact Lock-1 direction. But it doesn't carry the 4-family
+   mean: gemma and mistral lean slightly *negative*, so the aggregate sits at +0.020
+   with a CI that includes 0. At n=28 clusters the bootstrap is wide; per the locked
+   rule (CI excludes 0 → superiority) this is **inconclusive**, not equivalence —
+   the CI is too wide to bound the effect below the SESOI either.
+3. **Direction is suggestive, not decisive.** 2 of 4 families positive, the largest
+   effect (granite) clean and in-direction, aggregate point estimate positive — but
+   no claim survives the pre-registered gate. The borrowed Panickssery anchor is
+   **not yet** retired on our own data; it's narrowed.
+
+**What closes it:** scale the cluster count (more problems, same locked pipeline) to
+tighten the bootstrap CI; granite's per-family delta suggests the effect is detectable
+at a single-verifier grain before the panel mean is. The pre-registration and decision
+rule carry forward unchanged — only n grows.

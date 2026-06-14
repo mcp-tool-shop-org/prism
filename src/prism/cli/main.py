@@ -34,11 +34,12 @@ from prism.probes.sycophancy import (
 from prism.providers.base import ModelProvider
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Callable, Sequence
     from pathlib import Path
 
     from prism.core.engine import VerificationEngine
     from prism.eval.corpus import Sample
+    from prism.eval.familyab import FamilyABResult
     from prism.eval.report import ReportData
     from prism.eval.runner import EvalRun
     from prism.receipts.store import ReceiptStore
@@ -589,6 +590,211 @@ def _run_family_ab(
     report.family_ab = ab
 
 
+def _build_round_robin_judge(
+    families: list[tuple[str, str]], offline: bool, out_dir: Path
+) -> tuple[Callable[[str, Sample], Awaitable[str]], list[ReceiptStore]]:
+    """Per-family measurement-only bypass engines for the within-judge round-robin.
+
+    Each verifier family judges EVERY family's artifacts — INCLUDING its own — so Lock 1 is bypassed
+    here ON PURPOSE (``allow_same_family=True``; the only allowed use beside the ``--family-ab``
+    control, confined to this CLI module per the Knight-Capital guard). One engine per family, each
+    pinned to that family's model via an OllamaProvider (the local daemon serves ``*-cloud`` seats
+    transparently); offline uses a deterministic MockProvider so the loop runs free (machinery, not
+    data). Returns the judge + the receipt stores to close.
+    """
+    from prism.core.engine import VerificationEngine
+    from prism.core.routing import FamilyRouter
+    from prism.core.setup import register_default_lenses
+    from prism.providers.ollama import OllamaProvider
+    from prism.receipts.store import ReceiptStore
+
+    register_default_lenses()
+    local = ModelFamily.LOCAL
+    engines: dict[str, VerificationEngine] = {}
+    stores: list[ReceiptStore] = []
+    for label, model_id in families:
+        slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "fam"
+        db = out_dir / f"rr-{slug}-receipts.db"
+        # allow_same_family=True: a verifier MUST be able to judge its OWN family's artifacts here.
+        router = FamilyRouter(routing_map={local: [(local, model_id)]}, allow_same_family=True)
+        if offline:
+            from prism.eval.runner import MockProvider
+
+            provider: ModelProvider = MockProvider(family=local, model_id=model_id)
+            store = ReceiptStore(db_path=db, signing_secret=b"eval-offline-secret")
+        else:
+            provider = OllamaProvider(default_model=model_id)
+            store = ReceiptStore(db_path=db)
+        stores.append(store)
+        engines[label] = VerificationEngine(
+            providers={"local": provider}, router=router, receipt_store=store
+        )
+
+    async def judge(verifier_family: str, sample: Sample) -> str:
+        engine = engines[verifier_family]
+        request = VerifyRequest(
+            artifact=Artifact(type=ArtifactType(sample.artifact_type), content=sample.content),
+            intent=sample.intent,
+            caller=CallerContext(model_family=local, model_id=verifier_family),
+            budget=Budget(max_latency_ms=30000),
+        )
+        result = await engine.verify(request)
+        return result.reason.value if isinstance(result, VerifyError) else result.verdict.value
+
+    return judge, stores
+
+
+def _render_round_robin_markdown(
+    result: FamilyABResult, label: str, corpus_hash: str, n_records: int
+) -> str:
+    """Render the within-judge round-robin self-preference result as a RESULTS.md-style section."""
+    lines: list[str] = []
+    lines.append("# Family-different A/B — within-judge round-robin (self-preference)")
+    lines.append("")
+    lines.append(
+        f"Verifier seats: **{label}** | problems (clusters): {result.n_problems} | "
+        f"families: {result.n_families} ({result.n_interpretable_families} interpretable) | "
+        f"records: {n_records}"
+    )
+    lines.append(f"Corpus content-hash: `{corpus_hash[:12]}...`")
+    lines.append("")
+    lines.append("| Verifier | self_pref | FA own/other | refute own/other | bal-acc | interp. |")
+    lines.append("|---|---|---|---|---|---|")
+    for sp in result.per_family:
+        lines.append(
+            f"| {sp.verifier_family} | {sp.self_preference:+.3f} | "
+            f"{sp.false_accept_own:.2f} / {sp.false_accept_other:.2f} | "
+            f"{sp.refute_own:.2f} / {sp.refute_other:.2f} | {sp.balanced_accuracy:.2f} | "
+            f"{'yes' if sp.interpretable else 'no'} |"
+        )
+    lo, hi = result.aggregate_ci
+    lines.append("")
+    lines.append(
+        f"**Aggregate self_preference: {result.aggregate_self_preference:+.3f}** "
+        f"(95% CI [{lo:.3f}, {hi:.3f}]) — **decision: {result.decision}**"
+    )
+    if result.sesoi is not None and result.equivalence_ci is not None:
+        elo, ehi = result.equivalence_ci
+        lines.append(f"SESOI +/-{result.sesoi:.3f} FAR; TOST CI [{elo:.3f}, {ehi:.3f}].")
+    if not result.ci_interpretable:
+        lines.append(
+            f"> UNDERPOWERED: {result.n_problems} problem-clusters below the floor — the CI is not "
+            "trusted; grow the corpus (more problems) before reading the delta."
+        )
+    lines.append("")
+    lines.append(
+        "> self_preference(V) = false_accept_rate(V on OWN-family bugs) - "
+        "false_accept_rate(V on OTHER-family bugs); V's capability cancels inside the contrast. A "
+        "positive aggregate whose CI excludes 0 is clean Lock-1 evidence; equivalence bounds a "
+        "null below the SESOI."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _write_round_robin_receipt(
+    store: ReceiptStore, result: FamilyABResult, label: str, corpus_hash: str, out_dir: Path
+) -> None:
+    """Sign a replayable run-receipt pinning the round-robin self-preference result."""
+    summary = {
+        "aggregate_self_preference": result.aggregate_self_preference,
+        "aggregate_ci": list(result.aggregate_ci),
+        "decision": result.decision,
+        "sesoi": result.sesoi,
+        "n_problems": result.n_problems,
+        "n_interpretable_families": result.n_interpretable_families,
+        "per_family": [
+            {"family": sp.verifier_family, "self_preference": sp.self_preference,
+             "interpretable": sp.interpretable}
+            for sp in result.per_family
+        ],
+    }
+    receipt = store.create_receipt(
+        pre_strip_hash=corpus_hash or "no-corpus-hash",
+        post_strip_hash=corpus_hash or "no-corpus-hash",
+        verifier_models=[label],
+        pairwise_rho={},
+        reasoning_visibility_mode=ReasoningVisibility.STRIPPED,
+        verdict="accept",
+        confidence=min(1.0, abs(result.aggregate_self_preference)),
+        retryable=False,
+        lens_results_json=json.dumps(summary),
+        artifact_type="familyab_round_robin",
+    )
+    row = store.get_receipt(receipt.id)
+    if row is not None:
+        row["signature_valid"] = store.verify_signature(receipt.id)
+        (out_dir / "round-robin-receipt.json").write_text(
+            json.dumps(row, indent=2, default=str), encoding="utf-8"
+        )
+
+
+def _run_round_robin_cli(
+    familyab_dir: Path, offline: bool, out: Path, sesoi: float | None, runs: int, min_problems: int
+) -> None:
+    """Load a built family-AB corpus, run the within-judge round-robin, publish report + receipt.
+
+    The reproducibility wrapper for the v1.5.0 pilot's scratch harness: corpus → per-family bypass
+    engines → ``run_round_robin`` → ``compute_self_preference`` → signed receipt + report.
+    """
+    from prism.eval.corpus import Sample
+    from prism.eval.familyab import compute_self_preference, run_round_robin
+    from prism.receipts.store import ReceiptStore
+
+    manifest_path = familyab_dir / "FAMILYAB_MANIFEST.json"
+    if not manifest_path.exists():
+        raise click.ClickException(
+            f"no FAMILYAB_MANIFEST.json in {familyab_dir}; build the family-AB corpus first "
+            "(prism.eval.familygen.build_family_corpus)."
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    split = str(manifest.get("split", "fresh"))
+    jsonl = familyab_dir / f"{split}.jsonl"
+    samples = [
+        Sample.from_dict(json.loads(line))
+        for line in jsonl.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    provenance = {str(k): str(v) for k, v in dict(manifest["provenance"]).items()}
+    problem_of = {str(k): str(v) for k, v in dict(manifest["problem_of"]).items()}
+    families = [(str(f["family"]), str(f["model_id"])) for f in manifest["families"]]
+    verifier_families = [label for label, _ in families]
+    corpus_hash = str(manifest.get("content_hash", ""))
+
+    out.mkdir(parents=True, exist_ok=True)
+    judge, stores = _build_round_robin_judge(families, offline, out)
+    try:
+        records = []
+        for _ in range(max(1, runs)):
+            batch = asyncio.run(
+                run_round_robin(samples, provenance, problem_of, verifier_families, judge)
+            )
+            records.extend(batch)
+        result = compute_self_preference(records, sesoi=sesoi, min_problems=min_problems)
+    finally:
+        for s in stores:
+            s.close()
+
+    label = "offline-mock" if offline else "local-ollama-round-robin"
+    md = _render_round_robin_markdown(result, label, corpus_hash, len(records))
+    (out / "round_robin.md").write_text(md, encoding="utf-8")
+    (out / "round_robin.json").write_text(json.dumps(asdict(result), indent=2), encoding="utf-8")
+    db = out / "round-robin-receipt.db"
+    rr_store = (
+        ReceiptStore(db_path=db, signing_secret=b"eval-offline-secret")
+        if offline
+        else ReceiptStore(db_path=db)
+    )
+    try:
+        _write_round_robin_receipt(rr_store, result, label, corpus_hash, out)
+    finally:
+        rr_store.close()
+    try:
+        click.echo(md)
+    except UnicodeEncodeError:
+        # a legacy console (e.g. cp1252) can't encode a char; the report file keeps full UTF-8
+        click.echo(md.encode("ascii", "replace").decode("ascii"))
+
+
 def _render_cjb_markdown(summary: object, label: str, runs: int, content_hash: str) -> str:
     """Render the CodeJudgeBench summary as a markdown table, cohesive with the corpus report style.
 
@@ -792,6 +998,32 @@ def _run_codejudgebench_cli(
     help="Cap items loaded (default 50). both-orders x N>=3 x 2 sides = up to 12 verify "
     "calls/pair, so the cap is load-bearing for spend; a published number needs a full-split run.",
 )
+@click.option(
+    "--round-robin",
+    "round_robin_flag",
+    is_flag=True,
+    help="Run the within-judge family-different round-robin over a built family-AB corpus "
+    "(--familyab-corpus) and publish the self-preference report + a signed receipt.",
+)
+@click.option(
+    "--familyab-corpus",
+    default=None,
+    help="Directory of a built family-AB corpus (FAMILYAB_MANIFEST.json) for --round-robin.",
+)
+@click.option(
+    "--sesoi",
+    default=None,
+    type=float,
+    help="Pre-registered smallest effect of interest (FAR points) for the --round-robin TOST "
+    "equivalence arm (e.g. 0.05).",
+)
+@click.option(
+    "--min-problems",
+    "min_problems",
+    default=20,
+    type=int,
+    help="Minimum problem-clusters to trust the --round-robin CI (below it: 'underpowered').",
+)
 def eval_cmd(
     corpus_dir: str,
     split: str,
@@ -805,6 +1037,10 @@ def eval_cmd(
     benchmark: str | None,
     bench_task: str | None,
     bench_limit: int,
+    round_robin_flag: bool,
+    familyab_corpus: str | None,
+    sesoi: float | None,
+    min_problems: int,
 ) -> None:
     """Measure prism's lenses on the labeled calibration corpus (Slice 1).
 
@@ -819,6 +1055,15 @@ def eval_cmd(
     if do_build:
         manifest = build_corpus(Path(corpus_dir))
         click.echo(json.dumps(manifest, indent=2))
+        return
+
+    if round_robin_flag:
+        if not familyab_corpus:
+            click.echo("Error: --round-robin needs --familyab-corpus <dir>", err=True)
+            sys.exit(1)
+        _run_round_robin_cli(
+            Path(familyab_corpus), offline, Path(out_dir), sesoi, runs, min_problems
+        )
         return
 
     if benchmark == "codejudgebench":

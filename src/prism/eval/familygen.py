@@ -38,6 +38,11 @@ from typing import Any
 import httpx
 
 from prism.core.types import ArtifactType
+from prism.eval.container_sandbox import (
+    docker_available,
+    label_candidate,
+    signature_candidate,
+)
 from prism.eval.corpus import (
     CONTENT_HASH_SCHEMA,
     Sample,
@@ -45,7 +50,7 @@ from prism.eval.corpus import (
     corpus_content_hash,
 )
 from prism.eval.mutate import generate_mutants
-from prism.eval.sandbox import run_candidate
+from prism.eval.sandbox import ExecOutcome
 
 DEFAULT_BASE_URL = "http://localhost:11434"
 
@@ -57,6 +62,22 @@ GEN_SYSTEM = (
     "You are an expert Python programmer. Implement the requested function exactly as specified. "
     "Return ONLY the function source code — no markdown fences, no explanation, no tests."
 )
+
+# The deconfounder restyle: a family re-expresses a FIXED buggy solution in its own style WITHOUT
+# changing behavior, so the bug (its failing-test signature) is held constant across families and
+# only the style varies — isolating self-preference from capability-driven difficulty (Tsui 2025).
+RESTYLE_SYSTEM = (
+    "You are an expert Python programmer. Rewrite the given function in your own idiomatic style "
+    "WITHOUT changing its behavior in any way — preserve every output exactly, INCLUDING any bugs. "
+    "Return ONLY the function source code — no markdown fences, no explanation, no tests."
+)
+
+
+def _restyle_prompt(code: str) -> str:
+    return (
+        "Rewrite the following function in your own style, preserving its EXACT behavior on every "
+        "input — including any incorrect outputs / bugs (do NOT fix anything):\n\n" + code
+    )
 
 
 @dataclass(frozen=True)
@@ -71,6 +92,15 @@ class ProblemSpec:
     intent: str
     entry_point: str
     test_code: str
+    # Optional provenance / execution metadata for EXTERNALLY-sourced problems (LiveCodeBench,
+    # BigCodeBench). Authored seed problems leave these at defaults (frozen interface stays
+    # backward-compatible). ``libs`` = third-party imports the problem needs (lib-bearing problems
+    # route to the containerized labeler); ``contest_date`` drives the per-family post-cutoff
+    # contamination holdout; ``source`` is the provenance label.
+    libs: tuple[str, ...] = ()
+    contest_date: str | None = None
+    difficulty: str = ""
+    source: str = "authored"
 
 
 @dataclass(frozen=True)
@@ -209,6 +239,32 @@ def _make_sample(
     )
 
 
+_UNRUNNABLE_MARKERS = ("ModuleNotFoundError", "ImportError", "No module named")
+
+
+def _is_unrunnable(outcome: ExecOutcome) -> bool:
+    """An ERROR whose stderr names a missing import: the env lacks the lib (label undefined).
+
+    Such an artifact is SKIPPED (never labeled buggy) — a missing dependency is not a code defect.
+    It's how a lib-bearing problem that couldn't reach the container (Docker absent) avoids
+    corrupting the corpus with false bugs.
+    """
+    return outcome.status == "error" and any(m in outcome.detail for m in _UNRUNNABLE_MARKERS)
+
+
+async def _safe_generate(gen: GenerateFn, model_id: str, system: str, user: str) -> str:
+    """Generate, tolerating a TRANSIENT provider error (read-timeout / connection) by returning ''.
+
+    A long real-model corpus build makes thousands of calls; one transient ``httpx`` blip must not
+    crash the whole batch (and lose every artifact already generated). The caller treats '' as an
+    empty generation and skips that one artifact, so the run is resilient by construction.
+    """
+    try:
+        return await gen(model_id, system, user)
+    except httpx.HTTPError:
+        return ""
+
+
 async def build_family_corpus(
     out_dir: Path,
     families: list[FamilySpec],
@@ -216,19 +272,29 @@ async def build_family_corpus(
     problems: list[ProblemSpec] | None = None,
     split: str = "fresh",
     generate_fn: GenerateFn | None = None,
-    mutants_per_clean: int = 3,
+    mutants_per_clean: int = 2,
     timeout_s: float = 5.0,
     temperature: float = 0.2,
     seed: int | None = 0,
     base_url: str = DEFAULT_BASE_URL,
     contamination_refs: list[str] | None = None,
     contamination_max_run: int = 0,
+    perplexity_fn: Callable[[str], float | None] | None = None,
+    deconfound: bool = True,
 ) -> dict[str, object]:
     """Generate, execution-label, and materialize a family-provenanced code corpus + its manifest.
 
     Each family generates a solution per problem; a clean generation contributes a clean ``Sample``
     plus up to ``mutants_per_clean`` execution-verified mutant bugs; a failed generation contributes
-    a natural bug. ``generate_fn`` defaults to a local Ollama backend; inject a fake for tests.
+    a NATURAL bug. On harder (LiveCodeBench/BigCodeBench) problems natural fails dominate the buggy
+    stratum — the study-swarm's natural-majority target, since natural bugs carry the family's
+    pattern-insistence synthetic mutants lack. ``generate_fn`` defaults to a local Ollama backend.
+
+    Labeling routes through ``label_candidate``: lib-bearing problems (``ProblemSpec.libs``) run in
+    the Docker labeler, stdlib-only in the in-process sandbox. An artifact that can't run (a missing
+    dependency, ``ModuleNotFoundError``) is SKIPPED, never mislabeled buggy. ``perplexity_fn``
+    (optional) logs a per-artifact fluency covariate (Wataoka 2024) — the self-preference channel
+    rides on low perplexity, so it is a confound backstop beside the deconfounder stratum.
 
     ``contamination_max_run`` > 0 DROPS any artifact whose longest shared token run with
     ``contamination_refs`` exceeds it (0 = record-only, never drop). Returns the manifest; raises
@@ -242,17 +308,47 @@ async def build_family_corpus(
     gen = generate_fn or _default_generate(base_url=base_url, temperature=temperature, seed=seed)
     refs = contamination_refs or []
 
+    # Probe Docker ONCE (only when a problem needs it) and reuse the verdict for every label call —
+    # avoids a `docker version` subprocess per artifact and keeps stdlib-only builds Docker-free.
+    docker_ok = docker_available() if any(p.libs for p in problems) else False
+
+    def _container_check(**_kwargs: object) -> bool:
+        return docker_ok
+
+    async def _label(code: str, problem: ProblemSpec) -> ExecOutcome:
+        return await asyncio.to_thread(
+            label_candidate, code, problem, timeout_s=timeout_s, container_check=_container_check
+        )
+
+    async def _signature(code: str, problem: ProblemSpec) -> frozenset[str] | None:
+        return await asyncio.to_thread(
+            signature_candidate,
+            code,
+            problem,
+            timeout_s=timeout_s,
+            container_check=_container_check,
+        )
+
+    model_of = {f.family: f.model_id for f in families}
     samples: list[Sample] = []
     provenance: dict[str, str] = {}
     problem_of: dict[str, str] = {}  # sample_id -> problem id (the A/B harness's bootstrap cluster)
     overlap_by_sample: dict[str, int] = {}
+    perplexity_by_sample: dict[str, float] = {}
     per_family: dict[str, Counter[str]] = {}
+    clean_gens: dict[str, dict[str, str]] = {}  # {problem_id: {family: clean code}} (deconfounder)
+
+    def _record_perplexity(sid: str, code: str) -> None:
+        if perplexity_fn is not None:
+            value = perplexity_fn(code)
+            if value is not None:
+                perplexity_by_sample[sid] = value
 
     for fam in families:
         counter = per_family.setdefault(fam.family, Counter())
         slug = _slug(fam.family)
         for problem in problems:
-            raw = await gen(fam.model_id, GEN_SYSTEM, _gen_prompt(problem))
+            raw = await _safe_generate(gen, fam.model_id, GEN_SYSTEM, _gen_prompt(problem))
             code = _extract_code(raw)
             if not code.strip():
                 counter["empty"] += 1
@@ -263,9 +359,10 @@ async def build_family_corpus(
                 counter["dropped_contaminated"] += 1
                 continue
 
-            outcome = await asyncio.to_thread(
-                run_candidate, code, problem.test_code, problem.entry_point, timeout_s=timeout_s
-            )
+            outcome = await _label(code, problem)
+            if _is_unrunnable(outcome):
+                counter["unrunnable"] += 1  # missing dependency — label undefined, skip
+                continue
 
             if outcome.passed:
                 sid = f"fam-{slug}-{problem.id}-gen-clean"
@@ -278,16 +375,17 @@ async def build_family_corpus(
                 provenance[sid] = fam.family
                 problem_of[sid] = problem.id
                 overlap_by_sample[sid] = overlap
+                _record_perplexity(sid, code)
                 counter["clean"] += 1
+                clean_gens.setdefault(problem.id, {})[fam.family] = code  # for the deconfounder
 
                 kept = 0
                 for mutant in generate_mutants(code, limit=mutants_per_clean * 3):
                     if kept >= mutants_per_clean:
                         break
-                    m_outcome = await asyncio.to_thread(
-                        run_candidate, mutant.code, problem.test_code, problem.entry_point,
-                        timeout_s=timeout_s,
-                    )
+                    m_outcome = await _label(mutant.code, problem)
+                    if _is_unrunnable(m_outcome):
+                        continue  # missing dependency — skip this mutant, don't mislabel
                     if not m_outcome.is_buggy:
                         continue  # equivalent mutant — no behavior change; never mislabel buggy
                     msid = f"fam-{slug}-{problem.id}-mut{kept}"
@@ -300,6 +398,7 @@ async def build_family_corpus(
                     provenance[msid] = fam.family
                     problem_of[msid] = problem.id
                     overlap_by_sample[msid] = contamination_overlap(mutant.code, refs)
+                    _record_perplexity(msid, mutant.code)
                     counter["mutant"] += 1
                     kept += 1
             else:
@@ -313,7 +412,56 @@ async def build_family_corpus(
                 provenance[sid] = fam.family
                 problem_of[sid] = problem.id
                 overlap_by_sample[sid] = overlap
+                _record_perplexity(sid, code)
                 counter["natural_bug"] += 1
+
+    # --- Deconfounder stratum (faithful shared-bug restyle) ------------------------------------
+    # For each problem >=2 families solved cleanly, hold ONE bug constant (identical failing-test
+    # signature) across families and vary only the family STYLE. This isolates self-preference from
+    # capability-driven bug difficulty (the critic's must-fix; Tsui 2025) — the estimator restricts
+    # the contrast to bug_class=="deconfound" for a difficulty-matched read.
+    if deconfound:
+        problems_by_id = {p.id: p for p in problems}
+        for problem_id, fam_clean in clean_gens.items():
+            if len(fam_clean) < 2:
+                continue  # need >=2 clean-producing families to vary style at a fixed bug
+            problem = problems_by_id[problem_id]
+            ordered = [f.family for f in families if f.family in fam_clean]
+            # the FIXED canonical bug: first execution-verified buggy mutant of the canonical clean
+            canonical_bug: str | None = None
+            for mutant in generate_mutants(fam_clean[ordered[0]], limit=mutants_per_clean * 3):
+                m_out = await _label(mutant.code, problem)
+                if not _is_unrunnable(m_out) and m_out.is_buggy:
+                    canonical_bug = mutant.code
+                    break
+            if canonical_bug is None:
+                continue
+            sig0 = await _signature(canonical_bug, problem)
+            if not sig0:  # None or empty -> no usable same-bug key
+                continue
+            for family in ordered:
+                raw = await _safe_generate(
+                    gen, model_of[family], RESTYLE_SYSTEM, _restyle_prompt(canonical_bug)
+                )
+                restyled = _extract_code(raw)
+                if not restyled.strip():
+                    continue
+                r_out = await _label(restyled, problem)
+                if _is_unrunnable(r_out) or not r_out.is_buggy:
+                    continue
+                if await _signature(restyled, problem) != sig0:
+                    continue  # not the IDENTICAL failing-test set — a different bug; drop
+                dsid = f"deconf-{_slug(problem_id)}-{_slug(family)}"
+                samples.append(
+                    _make_sample(
+                        dsid, restyled, problem, positive=True, bug_class="deconfound",
+                        verdict="revise", split=split,
+                    )
+                )
+                provenance[dsid] = family
+                problem_of[dsid] = problem_id
+                _record_perplexity(dsid, restyled)
+                per_family[family]["deconfound"] += 1
 
     integrity = check_corpus_integrity(samples)
     if integrity:
@@ -334,6 +482,10 @@ async def build_family_corpus(
         "n_problems": len(problems),
         "n_samples": len(samples),
         "n_positive": sum(1 for s in samples if s.positive),
+        # Deconfound-stratum diagnostic: problems where >=2 families produced a CLEAN gen (eligible
+        # for the shared-bug restyle). Low vs n_problems => the mix was too hard; pull in more
+        # easy/medium problems (see eval/problem_select).
+        "deconfound_eligible_problems": sum(1 for fc in clean_gens.values() if len(fc) >= 2),
         "counts_by_family": {fam: dict(c) for fam, c in per_family.items()},
         # PROVENANCE SIDECAR: sample_id -> producing family. The A/B harness groups by this to form
         # the within-judge self-vs-cross contrast; it lives here, NOT in the frozen Sample schema.
@@ -346,6 +498,9 @@ async def build_family_corpus(
             "max_run_drop_threshold": contamination_max_run,
             "per_sample_longest_run": overlap_by_sample,
         },
+        # Per-artifact fluency covariate (Wataoka 2024): the self-preference channel rides on low
+        # perplexity, so it is a confound backstop. Empty unless a perplexity_fn was passed.
+        "perplexity": {"per_sample": perplexity_by_sample},
         "content_hash": corpus_content_hash(samples),
         "content_hash_schema": CONTENT_HASH_SCHEMA,
         "note": (

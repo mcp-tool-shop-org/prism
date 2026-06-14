@@ -110,6 +110,73 @@ def test_only_own_family_is_uninterpretable() -> None:
     assert sp.interpretable is False
 
 
+def _two_family(n_problems: int, a_accepts_own_bug: bool) -> list[JudgeRecord]:
+    """Two interpretable families A and B, clean judges on clean code and on each other's bugs.
+
+    When ``a_accepts_own_bug`` is True, A false-accepts its OWN family's bugs (self_preference 1.0)
+    and B has none (0.0) -> aggregate 0.5. When False, both refute every bug -> aggregate 0.0. Every
+    problem is identical, so the cluster bootstrap CI is degenerate (excludes 0 in the self-pref
+    case, sits at 0 in the clean case) — deterministic for decision-rule assertions.
+    """
+    recs: list[JudgeRecord] = []
+    n = 0
+    for i in range(n_problems):
+        p = f"p{i}"
+
+        def rec(vf: str, pf: str, buggy: bool, verdict: str) -> JudgeRecord:
+            nonlocal n
+            n += 1
+            return JudgeRecord(vf, pf, p, f"s{n}", buggy, verdict)
+
+        own_bug = "accept" if a_accepts_own_bug else "refuse"
+        recs += [
+            rec("A", "A", True, own_bug),
+            rec("A", "B", True, "refuse"),
+            rec("A", "A", False, "accept"),
+            rec("A", "B", False, "accept"),
+            rec("B", "B", True, "refuse"),
+            rec("B", "A", True, "refuse"),
+            rec("B", "B", False, "accept"),
+            rec("B", "A", False, "accept"),
+        ]
+    return recs
+
+
+def test_ci_underpowered_below_min_problems() -> None:
+    # 6 problems < the default 20-cluster floor: the CI is flagged uninterpretable, not trusted.
+    result = compute_self_preference(_build())  # 6 problems
+    assert result.n_problems == 6
+    assert result.ci_interpretable is False
+    assert result.decision == "underpowered"
+
+
+def test_relaxed_floor_lets_a_small_run_decide() -> None:
+    # same 6-problem run, but with the floor lowered: a degenerate positive CI -> superiority
+    result = compute_self_preference(_build(), min_problems=3)
+    assert result.ci_interpretable is True
+    assert result.decision == "superiority"
+
+
+def test_superiority_when_ci_excludes_zero() -> None:
+    result = compute_self_preference(_two_family(20, a_accepts_own_bug=True), sesoi=0.05)
+    assert result.n_interpretable_families == 2
+    assert result.aggregate_self_preference == 0.5
+    lo, hi = result.aggregate_ci
+    assert lo > 0.0  # excludes zero
+    assert result.decision == "superiority"
+
+
+def test_equivalence_vs_inconclusive_depends_on_sesoi() -> None:
+    clean = _two_family(20, a_accepts_own_bug=False)  # aggregate 0.0, CI (0,0)
+    # WITHOUT a pre-registered SESOI a zero-centered null is only "inconclusive"...
+    assert compute_self_preference(clean).decision == "inconclusive"
+    # ...WITH a SESOI the same tight null is a positive equivalence claim (bounded below 0.05 FAR).
+    equiv = compute_self_preference(clean, sesoi=0.05)
+    assert equiv.sesoi == 0.05
+    assert equiv.equivalence_ci is not None
+    assert equiv.decision == "equivalence"
+
+
 def _sample(sid: str, positive: bool) -> Sample:
     return Sample(
         id=sid,
