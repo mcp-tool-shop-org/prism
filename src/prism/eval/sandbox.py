@@ -123,8 +123,14 @@ try:
         rc = 0
 except AssertionError:
     rc = 1
-except BaseException:
+except BaseException as _exc:
     rc = 2
+    # Surface the exception type on stderr so the labeler can tell an UNRUNNABLE (missing dep:
+    # ModuleNotFoundError) from a genuine crash-bug. The runner already defaults rc=2 (buggy); this
+    # only adds triage detail (the last stderr line is the exception class + message).
+    import sys as _sys
+    import traceback as _tb
+    _tb.print_exception(type(_exc), _exc, _exc.__traceback__, file=_sys.stderr)
 
 _real_exit(rc)
 '''

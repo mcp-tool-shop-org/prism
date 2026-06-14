@@ -38,6 +38,7 @@ from typing import Any
 import httpx
 
 from prism.core.types import ArtifactType
+from prism.eval.container_sandbox import docker_available, label_candidate
 from prism.eval.corpus import (
     CONTENT_HASH_SCHEMA,
     Sample,
@@ -45,7 +46,7 @@ from prism.eval.corpus import (
     corpus_content_hash,
 )
 from prism.eval.mutate import generate_mutants
-from prism.eval.sandbox import run_candidate
+from prism.eval.sandbox import ExecOutcome
 
 DEFAULT_BASE_URL = "http://localhost:11434"
 
@@ -218,6 +219,19 @@ def _make_sample(
     )
 
 
+_UNRUNNABLE_MARKERS = ("ModuleNotFoundError", "ImportError", "No module named")
+
+
+def _is_unrunnable(outcome: ExecOutcome) -> bool:
+    """An ERROR whose stderr names a missing import: the env lacks the lib (label undefined).
+
+    Such an artifact is SKIPPED (never labeled buggy) — a missing dependency is not a code defect.
+    It's how a lib-bearing problem that couldn't reach the container (Docker absent) avoids
+    corrupting the corpus with false bugs.
+    """
+    return outcome.status == "error" and any(m in outcome.detail for m in _UNRUNNABLE_MARKERS)
+
+
 async def build_family_corpus(
     out_dir: Path,
     families: list[FamilySpec],
@@ -225,19 +239,28 @@ async def build_family_corpus(
     problems: list[ProblemSpec] | None = None,
     split: str = "fresh",
     generate_fn: GenerateFn | None = None,
-    mutants_per_clean: int = 3,
+    mutants_per_clean: int = 2,
     timeout_s: float = 5.0,
     temperature: float = 0.2,
     seed: int | None = 0,
     base_url: str = DEFAULT_BASE_URL,
     contamination_refs: list[str] | None = None,
     contamination_max_run: int = 0,
+    perplexity_fn: Callable[[str], float | None] | None = None,
 ) -> dict[str, object]:
     """Generate, execution-label, and materialize a family-provenanced code corpus + its manifest.
 
     Each family generates a solution per problem; a clean generation contributes a clean ``Sample``
     plus up to ``mutants_per_clean`` execution-verified mutant bugs; a failed generation contributes
-    a natural bug. ``generate_fn`` defaults to a local Ollama backend; inject a fake for tests.
+    a NATURAL bug. On harder (LiveCodeBench/BigCodeBench) problems natural fails dominate the buggy
+    stratum — the study-swarm's natural-majority target, since natural bugs carry the family's
+    pattern-insistence synthetic mutants lack. ``generate_fn`` defaults to a local Ollama backend.
+
+    Labeling routes through ``label_candidate``: lib-bearing problems (``ProblemSpec.libs``) run in
+    the Docker labeler, stdlib-only in the in-process sandbox. An artifact that can't run (a missing
+    dependency, ``ModuleNotFoundError``) is SKIPPED, never mislabeled buggy. ``perplexity_fn``
+    (optional) logs a per-artifact fluency covariate (Wataoka 2024) — the self-preference channel
+    rides on low perplexity, so it is a confound backstop beside the deconfounder stratum.
 
     ``contamination_max_run`` > 0 DROPS any artifact whose longest shared token run with
     ``contamination_refs`` exceeds it (0 = record-only, never drop). Returns the manifest; raises
@@ -251,11 +274,30 @@ async def build_family_corpus(
     gen = generate_fn or _default_generate(base_url=base_url, temperature=temperature, seed=seed)
     refs = contamination_refs or []
 
+    # Probe Docker ONCE (only when a problem needs it) and reuse the verdict for every label call —
+    # avoids a `docker version` subprocess per artifact and keeps stdlib-only builds Docker-free.
+    docker_ok = docker_available() if any(p.libs for p in problems) else False
+
+    def _container_check(**_kwargs: object) -> bool:
+        return docker_ok
+
+    async def _label(code: str, problem: ProblemSpec) -> ExecOutcome:
+        return await asyncio.to_thread(
+            label_candidate, code, problem, timeout_s=timeout_s, container_check=_container_check
+        )
+
     samples: list[Sample] = []
     provenance: dict[str, str] = {}
     problem_of: dict[str, str] = {}  # sample_id -> problem id (the A/B harness's bootstrap cluster)
     overlap_by_sample: dict[str, int] = {}
+    perplexity_by_sample: dict[str, float] = {}
     per_family: dict[str, Counter[str]] = {}
+
+    def _record_perplexity(sid: str, code: str) -> None:
+        if perplexity_fn is not None:
+            value = perplexity_fn(code)
+            if value is not None:
+                perplexity_by_sample[sid] = value
 
     for fam in families:
         counter = per_family.setdefault(fam.family, Counter())
@@ -272,9 +314,10 @@ async def build_family_corpus(
                 counter["dropped_contaminated"] += 1
                 continue
 
-            outcome = await asyncio.to_thread(
-                run_candidate, code, problem.test_code, problem.entry_point, timeout_s=timeout_s
-            )
+            outcome = await _label(code, problem)
+            if _is_unrunnable(outcome):
+                counter["unrunnable"] += 1  # missing dependency — label undefined, skip
+                continue
 
             if outcome.passed:
                 sid = f"fam-{slug}-{problem.id}-gen-clean"
@@ -287,16 +330,16 @@ async def build_family_corpus(
                 provenance[sid] = fam.family
                 problem_of[sid] = problem.id
                 overlap_by_sample[sid] = overlap
+                _record_perplexity(sid, code)
                 counter["clean"] += 1
 
                 kept = 0
                 for mutant in generate_mutants(code, limit=mutants_per_clean * 3):
                     if kept >= mutants_per_clean:
                         break
-                    m_outcome = await asyncio.to_thread(
-                        run_candidate, mutant.code, problem.test_code, problem.entry_point,
-                        timeout_s=timeout_s,
-                    )
+                    m_outcome = await _label(mutant.code, problem)
+                    if _is_unrunnable(m_outcome):
+                        continue  # missing dependency — skip this mutant, don't mislabel
                     if not m_outcome.is_buggy:
                         continue  # equivalent mutant — no behavior change; never mislabel buggy
                     msid = f"fam-{slug}-{problem.id}-mut{kept}"
@@ -309,6 +352,7 @@ async def build_family_corpus(
                     provenance[msid] = fam.family
                     problem_of[msid] = problem.id
                     overlap_by_sample[msid] = contamination_overlap(mutant.code, refs)
+                    _record_perplexity(msid, mutant.code)
                     counter["mutant"] += 1
                     kept += 1
             else:
@@ -322,6 +366,7 @@ async def build_family_corpus(
                 provenance[sid] = fam.family
                 problem_of[sid] = problem.id
                 overlap_by_sample[sid] = overlap
+                _record_perplexity(sid, code)
                 counter["natural_bug"] += 1
 
     integrity = check_corpus_integrity(samples)
@@ -355,6 +400,9 @@ async def build_family_corpus(
             "max_run_drop_threshold": contamination_max_run,
             "per_sample_longest_run": overlap_by_sample,
         },
+        # Per-artifact fluency covariate (Wataoka 2024): the self-preference channel rides on low
+        # perplexity, so it is a confound backstop. Empty unless a perplexity_fn was passed.
+        "perplexity": {"per_sample": perplexity_by_sample},
         "content_hash": corpus_content_hash(samples),
         "content_hash_schema": CONTENT_HASH_SCHEMA,
         "note": (

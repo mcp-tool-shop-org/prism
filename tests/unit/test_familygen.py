@@ -142,6 +142,39 @@ async def test_problem_of_maps_every_sample(tmp_path: Path) -> None:
     assert set(problem_of) == set(provenance)  # every provenanced sample is clustered
 
 
+async def test_unrunnable_artifact_is_skipped_not_labeled_buggy(tmp_path: Path) -> None:
+    # a generation importing a missing module is UNRUNNABLE (ModuleNotFoundError), not a code bug:
+    # it must be skipped, never emitted as a natural bug (which would corrupt the corpus)
+    bad_import = "import definitely_not_a_real_module_xyz\ndef add(a, b):\n    return a + b\n"
+    gen = _make_gen({("m", "add"): bad_import})
+    manifest = await build_family_corpus(
+        tmp_path, [FamilySpec("f", "m")], problems=[_ADD], generate_fn=gen
+    )
+    assert manifest["n_samples"] == 0
+    counts = manifest["counts_by_family"]
+    assert isinstance(counts, dict)
+    assert counts["f"]["unrunnable"] == 1
+    assert counts["f"].get("natural_bug", 0) == 0  # NOT mislabeled buggy
+
+
+async def test_perplexity_covariate_is_recorded(tmp_path: Path) -> None:
+    gen = _make_gen({("good-model", "add"): _CORRECT_ADD})
+    manifest = await build_family_corpus(
+        tmp_path,
+        [FamilySpec("good", "good-model")],
+        problems=[_ADD],
+        generate_fn=gen,
+        mutants_per_clean=1,
+        perplexity_fn=lambda code: float(len(code)),
+    )
+    perp = manifest["perplexity"]
+    assert isinstance(perp, dict)
+    per_sample = perp["per_sample"]
+    assert isinstance(per_sample, dict)
+    # the generated code is stripped by _extract_code before scoring
+    assert per_sample["fam-good-add-gen-clean"] == float(len(_CORRECT_ADD.strip()))
+
+
 def test_seed_problems_are_well_formed() -> None:
     from prism.eval._familygen_problems import FRESH_PROBLEMS
 

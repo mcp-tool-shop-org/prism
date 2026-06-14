@@ -27,9 +27,25 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
-from prism.eval.familygen import ProblemSpec
 from prism.eval.sandbox import ExecOutcome, outcome_from_exit, run_candidate, write_runner_dir
+
+
+class Labelable(Protocol):
+    """Problem fields the labeler reads — a frozen ``ProblemSpec`` satisfies this structurally.
+
+    A Protocol (not an import of ``ProblemSpec``) so ``container_sandbox`` doesn't depend on
+    ``familygen`` (which imports ``label_candidate`` — a back-import would cycle). Members are
+    read-only properties so a frozen dataclass conforms.
+    """
+
+    @property
+    def libs(self) -> tuple[str, ...]: ...
+    @property
+    def test_code(self) -> str: ...
+    @property
+    def entry_point(self) -> str: ...
 
 # Image name (override per deployment); built from eval/docker/labeler.Dockerfile.
 DEFAULT_IMAGE = os.environ.get("PRISM_LABELER_IMAGE", "prism-labeler:latest")
@@ -100,7 +116,7 @@ def run_candidate_in_container(
 
 def label_candidate(
     code: str,
-    problem: ProblemSpec,
+    problem: Labelable,
     *,
     timeout_s: float = 10.0,
     image: str = DEFAULT_IMAGE,
