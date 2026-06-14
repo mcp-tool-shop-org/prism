@@ -222,3 +222,29 @@ gpt-oss:120b-cloud seat used for the A/B above) would almost certainly tie less 
   (findings #3 + the citation section); trial a kappa-based diversity gate (finding #1, F-22).
 - The same-family A/B (`--family-ab`) needs a 2nd configured family; the CodeJudgeBench headline
   needs a real verifier run (machinery + fixture tests already ship — see the sections above).
+
+## Family-different A/B v3 — PRE-REGISTRATION (locked 2026-06-14, before the run)
+
+The harder-corpus run that targets a real headline number (the v1.5.0 pilot was a ceiling-effect null;
+design/08). **Pinned BEFORE seeing any data** so the decision can't be p-hacked. Build harness:
+`eval/run_familyab_v3.py`; estimator: `prism eval --round-robin`.
+
+- **Estimand:** within-judge self_preference(V) = false_accept_rate(V on its OWN family's known-buggy
+  artifacts) − false_accept_rate(V on OTHER families' buggy artifacts), aggregated (mean) over
+  interpretable families. V's capability cancels inside the contrast (not the v1.4.0 confound).
+- **Families (4 distinct lineages):** `gpt-oss:120b-cloud` (OpenAI), `glm-4.6:cloud` (Zhipu),
+  `qwen3-coder-next:cloud` (Qwen), `mistral-small:24b` (Mistral). Each generates AND judges; served via
+  the local Ollama daemon (cloud seats transparently). Diversity-beats-count (Verga 2024).
+- **Corpus:** LiveCodeBench-functional, release_v6, post-cutoff window `start_date=2025-01-01`,
+  difficulty-stratified `{easy: 14, medium: 10, hard: 4}` (a mix so the deconfound stratum populates).
+  Execution-labeled (no LLM grader). Natural-majority buggy stratum + execution-verified mutants + the
+  faithful identical-failing-tests **deconfound stratum**.
+- **SESOI = 0.05 FAR** (Panickssery 2024 magnitude). **Decision rule:** SUPERIORITY if the 95% cluster
+  (problem) bootstrap CI on the aggregate excludes 0; else EQUIVALENCE if the 90% TOST CI ⊂ ±0.05;
+  else INCONCLUSIVE; UNDERPOWERED if < 20 problem-clusters survive (the CI is not trusted).
+  Discrimination-floor gate (balanced accuracy ≥ 0.6) excludes non-discriminating verifiers.
+- **Outcome is honest either way:** a positive CI-excludes-0 = Lock-1 confirmed on prism's own data;
+  an equivalence = self-preference bounded below 0.05 FAR; both retire the borrowed Panickssery anchor.
+
+> Result appended below once the run completes. The number traces to the signed run-receipt
+> (`round-robin-receipt.json`) + this pre-registration + the corpus content-hash.
