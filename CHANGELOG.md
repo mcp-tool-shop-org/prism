@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Family-different A/B v2 — the validity-clean within-judge round-robin.** The v1.4.0 `--family-ab`
+  was a *confounded* null (it compared a family-different model against a same-family model over a
+  fixed corpus, conflating family with model capability, and a fixed corpus can't fire
+  self-preference). The replacement isolates the family/self factor from capability:
+  - **Family-provenanced, execution-labeled corpus** (`prism.eval.familygen` + `eval.sandbox` +
+    `eval.mutate`): each model GENERATES the code; hidden tests LABEL it buggy/clean (no LLM grader,
+    which dodges label-circularity); clean generations are mutated (ROR/AOR/LCR, no
+    constant-replacement per Just 2014) and only test-failing mutants are kept. Producer family lives
+    in a manifest provenance sidecar, never the frozen `Sample` schema. Sandboxed execution
+    (`reliability_guard` + timeout, labeling-integrity-robust).
+  - **Within-judge estimator** (`prism.eval.familyab`): for verifier family V over known-buggy
+    artifacts, `self_preference(V) = false_accept_rate(V on own-family bugs) − …(other-family bugs)`;
+    V's capability cancels inside the contrast. Tri-state collapse (refute/abstain/accept) +
+    discrimination-floor gate.
+  - **Corrected statistics** (`prism.eval.metrics`): `mcnemar_midp` (Fagerland 2013),
+    `benjamini_hochberg` (BH-FDR), `cluster_bootstrap_ci` (resamples problems, respecting
+    items-nested-by-problem). `calibrate.FamilyAB` gained the mid-p p-value.
+  - **First valid pilot run** published to `eval/RESULTS.md`: 3 local lineages, aggregate
+    self_preference +0.000 (CI [0,0]) — an interpretable *ceiling-effect* null (every family catches
+    every obvious mutant), diagnosing corpus difficulty as the next gap, not a statistical confound.
+- **Configurable verifier registry (F-14).** Verifier model IDs are no longer hard-coded in source:
+  - `PRISM_VERIFIER_MODEL_<FAMILY>` overrides a verifier family's model id wherever it routes (a
+    deprecation is a config hotfix). `routing.resolve_routing_map` / `routing_map_digest`.
+  - `PRISM_<PROVIDER>_BASE_URL` points a provider at an OpenAI-compatible endpoint — e.g. Ollama
+    Cloud's `/v1` serving `gpt-oss:120b-cloud` as a first-class cross-family seat (no one-off harness).
+  - A source scan (`test_bypass_safety`) confines the measurement-only `allow_same_family` Lock-1
+    bypass to its two legitimate sites (Knight Capital lesson, SEC 34-70694).
+
+### Fixed
+- **Dated-model ops time-bomb:** the Anthropic provider default `claude-haiku-4-5-20251001` (a dated
+  snapshot that retires on a schedule) → the durable alias `claude-haiku-4-5`; overridable via
+  `PRISM_ANTHROPIC_MODEL`.
+
 ## [1.4.0] - 2026-06-14
 
 ### Added

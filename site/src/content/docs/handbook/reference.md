@@ -28,6 +28,8 @@ sidebar:
 | `PRISM_SIGNING_SECRET` | HMAC signing secret (legacy / explicit). |
 | `PRISM_DEV=1` | Use a built-in dev Ed25519 key — INSECURE, local only. |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` | Enable a hosted verifier family. |
+| `PRISM_VERIFIER_MODEL_<FAMILY>` | Override the verifier model id for a family wherever it routes (e.g. `PRISM_VERIFIER_MODEL_OPENAI=gpt-oss:120b-cloud`). A model deprecation is a config change, not a source edit. |
+| `PRISM_<PROVIDER>_MODEL` / `PRISM_<PROVIDER>_BASE_URL` | Override a provider's default model / base URL (`ANTHROPIC` · `OPENAI` · `GOOGLE` · `OLLAMA`). Point `PRISM_OPENAI_BASE_URL` at an OpenAI-compatible endpoint — e.g. Ollama Cloud's `/v1` — to use a hosted model as a cross-family verifier seat. |
 | `PRISM_API_KEYS` | Comma-separated SHA-256 hashes of HTTP bearer API keys. |
 | `PRISM_HTTP_ALLOW_NO_AUTH=1` | Allow unauthenticated HTTP use (local dev only). |
 | `PRISM_WEBHOOK_SECRET` | Sign async/escalate webhook deliveries. |
