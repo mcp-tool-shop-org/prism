@@ -46,6 +46,8 @@ __all__ = [
     "wilson_interval",
     "mcnemar_midp",
     "benjamini_hochberg",
+    "benjamini_yekutieli",
+    "tost_equivalence",
     "cluster_bootstrap_ci",
 ]
 
@@ -389,6 +391,46 @@ def benjamini_hochberg(pvalues: Sequence[float], q: float = 0.10) -> list[bool]:
         if pvalues[idx] <= (rank / m) * q:
             threshold_p = pvalues[idx]
     return [p <= threshold_p for p in pvalues]
+
+
+def benjamini_yekutieli(pvalues: Sequence[float], q: float = 0.10) -> list[bool]:
+    """Benjamini-Yekutieli FDR control under ARBITRARY dependence: per p-value, REJECTED at ``q``.
+
+    BH (above) controls FDR only under independence or positive-regression dependence (PRDS). When
+    the tests are arbitrarily correlated (negatively, or just messily), BH can exceed the nominal
+    FDR. BY (Benjamini & Yekutieli 2001, DOI:10.1214/aos/1013699998) restores control for ANY
+    dependence by dividing the BH threshold by ``c(m) = sum_{i=1..m} 1/i``: the largest rank ``i``
+    (1-based, p ascending) with ``p_(i) <= (i / (m * c(m))) * q`` rejects every p at or below it.
+    Strictly more conservative than BH (c(m) > 1 for m >= 2). Use it for the family-AB four-lens /
+    Lock-4 cells, positively correlated (same judge/items) in a way BH's PRDS does not cover. Aligns
+    to the INPUT order.
+    """
+    m = len(pvalues)
+    if m == 0:
+        return []
+    c_m = sum(1.0 / i for i in range(1, m + 1))
+    order = sorted(range(m), key=lambda i: pvalues[i])
+    threshold_p = -1.0
+    for rank, idx in enumerate(order, start=1):
+        if pvalues[idx] <= (rank / (m * c_m)) * q:
+            threshold_p = pvalues[idx]
+    return [p <= threshold_p for p in pvalues]
+
+
+def tost_equivalence(ci_lower: float, ci_upper: float, *, sesoi: float) -> bool:
+    """Two One-Sided Tests (TOST) equivalence via the confidence-interval rule.
+
+    Equivalence to "no practically-relevant effect" holds when the equivalence-level CI lies
+    ENTIRELY inside the bounds ``(-sesoi, +sesoi)`` — the CI form of TOST (Lakens, Scheel & Isager
+    2018, DOI:10.1177/2515245918770963). The caller must pass the ``(1 - 2*alpha)`` CI (e.g. the 90%
+    CI for a TOST at alpha = 0.05), NOT the 95% CI used for the superiority test. ``sesoi`` is the
+    smallest effect size of interest and MUST be pre-registered and positive. A True verdict turns a
+    non-significant result into a positive claim ("the effect is bounded below the SESOI"), the cure
+    for the pilot's uninterpretable [0, 0] null. Bounds are inclusive.
+    """
+    if sesoi <= 0:
+        raise ValueError(f"sesoi must be positive (a pre-registered effect bound), got {sesoi}")
+    return ci_lower >= -sesoi and ci_upper <= sesoi
 
 
 def cluster_bootstrap_ci(

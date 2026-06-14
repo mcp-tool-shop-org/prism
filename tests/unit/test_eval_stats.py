@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from prism.eval.metrics import benjamini_hochberg, cluster_bootstrap_ci, mcnemar_midp
+from prism.eval.metrics import (
+    benjamini_hochberg,
+    benjamini_yekutieli,
+    cluster_bootstrap_ci,
+    mcnemar_midp,
+    tost_equivalence,
+)
 
 
 def test_mcnemar_midp_symmetric_is_one() -> None:
@@ -47,6 +53,47 @@ def test_bh_mixed_and_order_preserving() -> None:
 
 def test_bh_empty() -> None:
     assert benjamini_hochberg([], q=0.1) == []
+
+
+def test_by_is_more_conservative_than_bh() -> None:
+    # BY divides the BH threshold by c(m)=sum(1/i) > 1, so it rejects a subset of BH's rejections.
+    # For [0.01, 0.04, 0.9] at q=0.1, BH passes 0.01 AND 0.04; BY (c(3)=11/6) passes only 0.01.
+    assert benjamini_hochberg([0.01, 0.04, 0.9], q=0.1) == [True, True, False]
+    assert benjamini_yekutieli([0.01, 0.04, 0.9], q=0.1) == [True, False, False]
+
+
+def test_by_all_and_none() -> None:
+    assert benjamini_yekutieli([0.0001, 0.0002, 0.0003], q=0.1) == [True, True, True]
+    assert benjamini_yekutieli([0.5, 0.6, 0.7], q=0.1) == [False, False, False]
+
+
+def test_by_order_preserving() -> None:
+    # aligned to INPUT order, not sorted order
+    assert benjamini_yekutieli([0.9, 0.01, 0.04], q=0.1) == [False, True, False]
+
+
+def test_by_empty() -> None:
+    assert benjamini_yekutieli([], q=0.1) == []
+
+
+def test_tost_equivalent_when_ci_within_bounds() -> None:
+    assert tost_equivalence(-0.02, 0.03, sesoi=0.05) is True
+
+
+def test_tost_not_equivalent_when_ci_exceeds_either_bound() -> None:
+    assert tost_equivalence(-0.02, 0.06, sesoi=0.05) is False  # upper exceeds
+    assert tost_equivalence(-0.06, 0.02, sesoi=0.05) is False  # lower exceeds
+
+
+def test_tost_boundary_is_inclusive() -> None:
+    assert tost_equivalence(-0.05, 0.05, sesoi=0.05) is True
+
+
+def test_tost_rejects_nonpositive_sesoi() -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        tost_equivalence(-0.01, 0.01, sesoi=0.0)
 
 
 def _mean(xs: Sequence[float]) -> float | None:
