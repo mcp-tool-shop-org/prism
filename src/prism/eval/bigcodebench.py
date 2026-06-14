@@ -80,6 +80,25 @@ def check(candidate):
             f"bigcodebench tests failed: {len(_result.failures)} failures, "
             f"{len(_result.errors)} errors"
         )
+
+
+def failing_tests(candidate):
+    # The SET of failing test ids (the deconfounder's same-bug key): run all TestCases, collect
+    # which methods fail/error. A stable id per test method, sorted for a deterministic signature.
+    import io as _io
+    import unittest as _unittest
+
+    _loader = _unittest.TestLoader()
+    _suite = _unittest.TestSuite()
+    for _obj in list(globals().values()):
+        if (
+            isinstance(_obj, type)
+            and issubclass(_obj, _unittest.TestCase)
+            and _obj is not _unittest.TestCase
+        ):
+            _suite.addTests(_loader.loadTestsFromTestCase(_obj))
+    _result = _unittest.TextTestRunner(stream=_io.StringIO(), verbosity=0).run(_suite)
+    return sorted(_t.id() for _t, _ in list(_result.failures) + list(_result.errors))
 '''
 
 

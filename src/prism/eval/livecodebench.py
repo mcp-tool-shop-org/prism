@@ -143,6 +143,20 @@ def _build_check_code(func_name: str, cases: list[dict[str, object]]) -> str:
         "        assert _result == _case['expected'], (\n"
         "            f\"{_FUNC_NAME}({_case['args']}) = {_result!r} != {_case['expected']!r}\"\n"
         "        )\n"
+        "\n"
+        "def failing_tests(candidate):\n"
+        "    # The SET of failing case indices (the deconfounder's same-bug key), sorted.\n"
+        "    _inst = candidate() if isinstance(candidate, type) else candidate\n"
+        "    _fn = getattr(_inst, _FUNC_NAME)\n"
+        "    _fails = []\n"
+        "    for _i, _case in enumerate(_CASES):\n"
+        "        try:\n"
+        "            _ok = _fn(*_case['args']) == _case['expected']\n"
+        "        except Exception:\n"
+        "            _ok = False\n"
+        "        if not _ok:\n"
+        "            _fails.append(str(_i))\n"
+        "    return sorted(_fails)\n"
     )
 
 

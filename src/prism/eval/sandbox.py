@@ -105,12 +105,14 @@ reliability_guard()
 _here = pathlib.Path(__file__).resolve().parent
 _meta = json.loads((_here / "meta.json").read_text(encoding="utf-8"))
 _entry = _meta["entry_point"]
+_mode = _meta.get("mode", "label")
 _code = (_here / "candidate.txt").read_text(encoding="utf-8")
 _test = (_here / "test.txt").read_text(encoding="utf-8")
 
 # Default to ERROR (buggy): any unexpected control flow labels the artifact buggy, NEVER silently
 # clean. rc becomes 0 (PASS) ONLY after check() returns without raising. The final exit uses the
 # captured os._exit so candidate code cannot rewrite the verdict by patching the exit primitives.
+# In "signature" mode it instead prints SIG:<json failing-test ids> + exits 0 (deconfounder).
 rc = 2
 _ns = {}
 try:
@@ -119,8 +121,15 @@ try:
         rc = 4
     else:
         exec(compile(_test, "<test>", "exec"), _ns)
-        _ns["check"](_ns[_entry])
-        rc = 0
+        if _mode == "signature":
+            import sys as _sysig
+            _sig = _ns["failing_tests"](_ns[_entry]) if "failing_tests" in _ns else []
+            _sysig.stdout.write("SIG:" + json.dumps(_sig))
+            _sysig.stdout.flush()  # os._exit does NOT flush buffers — flush or SIG is lost
+            rc = 0
+        else:
+            _ns["check"](_ns[_entry])
+            rc = 0
 except AssertionError:
     rc = 1
 except BaseException as _exc:
@@ -136,20 +145,68 @@ _real_exit(rc)
 '''
 
 
-def write_runner_dir(target: Path, code: str, test_code: str, entry_point: str) -> Path:
+def write_runner_dir(
+    target: Path, code: str, test_code: str, entry_point: str, *, mode: str = "label"
+) -> Path:
     """Write the fixed runner + candidate/test/meta files into ``target``; return the runner path.
 
     The candidate source, test source, and entry point are passed as FILES (never interpolated into
     the runner template), so untrusted code can never alter the runner's own logic. Shared by the
-    in-process sandbox and the containerized labeler so both execute byte-identically.
+    in-process sandbox and the containerized labeler so both execute byte-identically. ``mode``
+    ("label" or "signature") tells the runner to pass/fail-label or to print the failing-test set.
     """
     target.mkdir(parents=True, exist_ok=True)
     (target / "candidate.txt").write_text(code, encoding="utf-8")
     (target / "test.txt").write_text(test_code, encoding="utf-8")
-    (target / "meta.json").write_text(json.dumps({"entry_point": entry_point}), encoding="utf-8")
+    (target / "meta.json").write_text(
+        json.dumps({"entry_point": entry_point, "mode": mode}), encoding="utf-8"
+    )
     runner = target / "runner.py"
     runner.write_text(_RUNNER_SRC, encoding="utf-8")
     return runner
+
+
+_SIG_PREFIX = "SIG:"
+
+
+def parse_signature(stdout: bytes) -> frozenset[str] | None:
+    """Parse the ``SIG:<json list>`` a signature-mode run prints; None if absent or unparseable."""
+    text = stdout.decode("utf-8", "replace")
+    idx = text.find(_SIG_PREFIX)
+    if idx < 0:
+        return None
+    try:
+        ids = json.loads(text[idx + len(_SIG_PREFIX) :].strip())
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return frozenset(str(i) for i in ids) if isinstance(ids, list) else None
+
+
+def run_failure_signature(
+    code: str, test_code: str, entry_point: str, *, timeout_s: float = 5.0
+) -> frozenset[str] | None:
+    """The SET of hidden tests ``code`` FAILS (the deconfounder's same-bug key), or None.
+
+    Runs the ``failing_tests`` collector the loaders bake into ``test_code`` (signature mode). None
+    means undefined here (candidate crashed/timed out / no collector) — the caller treats None as a
+    non-match. A clean candidate returns the empty set; a buggy one returns its failing-test ids.
+    """
+    with tempfile.TemporaryDirectory(prefix="prism-sig-") as tmp:
+        d = Path(tmp)
+        runner = write_runner_dir(d, code, test_code, entry_point, mode="signature")
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(runner)],
+                cwd=str(d),
+                capture_output=True,
+                timeout=timeout_s,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return None
+    if proc.returncode != _EXIT_PASS:
+        return None
+    return parse_signature(proc.stdout)
 
 
 def outcome_from_exit(returncode: int, stderr: bytes) -> ExecOutcome:
