@@ -119,6 +119,53 @@ and prism's own data is — honestly — null. (The CLI path `prism eval --famil
 2nd *general* configured family; the cloud seat used here was wired via a one-off harness because the
 routing map hardcodes hosted model IDs — see backlog item F-14, configurable routing.)
 
+## Family-different A/B v2 — the validity-clean within-judge design (method + pilot)
+
+The v1.4.0 null above is *confounded* (capability ≠ family; a fixed corpus can't fire self-preference).
+The fix shipped as a four-wave slice on `feat/familyab-corpus-pipeline`: a **family-provenanced,
+execution-labeled corpus** (each model GENERATES the code, hidden tests LABEL it — no LLM grader), a
+**config-driven verifier registry** (F-14: a cross-family seat is now env config, not a one-off
+harness), and the **within-judge round-robin estimator**:
+
+> for verifier family V over known-buggy artifacts,
+> `self_preference(V) = false_accept_rate(V on its OWN family's bugs) − …(on OTHER families' bugs)`
+
+V's capability cancels inside the contrast, so a positive aggregate is family self-preference, not a
+model-size artifact (Panickssery 2024; ReaLMistake / Kamoi 2024). Inference is a **cluster (problem)
+bootstrap** (items are nested by problem); a **discrimination-floor gate** excludes any verifier that
+can't tell buggy from clean; the tri-state verdict collapses refuse/revise→refute, escalate→abstain,
+accept→false-accept. The design was research-grounded + cross-family-verified via a study-swarm.
+
+**Pilot run (2026-06-14, local Ollama, zero cost):** 3 distinct lineages — `mistral-small:24b`,
+`granite4.1:30b`, `qwen3.6` — each generated solutions to 3 fresh problems → 18 execution-labeled
+artifacts (9 buggy mutants + 9 clean) → each model judged every model's artifacts.
+
+| Verifier | self_pref | false-accept own / other | refute own / other | bal-acc | interpretable |
+|---|---|---|---|---|---|
+| mistral | **+0.000** | 0.00 / 0.00 | 1.00 / 1.00 | 1.00 | yes |
+| granite | **+0.000** | 0.00 / 0.00 | 1.00 / 1.00 | 1.00 | yes |
+| qwen | **+0.000** | 0.00 / 0.00 | 1.00 / 1.00 | 0.94 | yes |
+| **Aggregate** | **+0.000**, CI **[0.00, 0.00]** | — | — | — | 3/3 families, 3 problems |
+
+**Honest reading — the method is validated; the signal is absent by a CEILING EFFECT, not by an
+absence of self-preference.** Every family caught every bug (refute 1.00 on its own AND others'
+artifacts) and false-accepted none (0.00 everywhere), so there is no headroom for a same-family judge
+to *under*-refute — the contrast is structurally zero. The cause is corpus difficulty: single-operator
+AST mutants of trivial functions (a flipped comparison, an off-by-one) are *obvious*, and a 24-30B
+verifier with four lenses catches them every time. Self-preference manifests on the SUBTLE bugs a
+same-family judge might miss (the ReaLMistake regime), not on bugs everyone catches. So the pilot's
+real result is a **measurement-design** one: the validity-clean loop runs end-to-end (corpus →
+round-robin → estimator → CI), and the remaining gap is **corpus difficulty**, not a statistical
+confound — a concrete, addressable next step, unlike the v1.4.0 confound.
+
+**Scale-up for a headline number:** harder/subtler defects where verifiers sometimes miss (natural
+generations on harder post-cutoff problems + semantically-subtle bugs, not just clean-code mutants);
+more families × problems for a CI that can exclude zero; and a first-class `prism eval --round-robin`
+command (the pilot drove the committed machinery — `eval/familygen` + `eval/familyab` — from a
+harness; the CLI wrapper is the reproducibility surface still to wire). Until that run, Lock 1 still
+stands on the borrowed Panickssery anchor — but prism now has the *valid instrument* to measure it,
+not a confounded proxy.
+
 ## L5 Style/Maintainability lens — ship/defer gate
 
 Slice 1 builds the **gate**, not the lens (data, not vibes — design/07 §E). Ship criteria: a labeled

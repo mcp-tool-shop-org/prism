@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 
 from prism.core.engine import VerificationEngine
+from prism.core.observability import routing_logger
 from prism.lenses.boundary import CrossBoundaryLens
 from prism.lenses.contract import ContractCompletenessLens
 from prism.lenses.groundedness import GroundednessLens
@@ -30,9 +31,13 @@ def build_providers_from_env() -> dict[str, ModelProvider]:
     """Build the provider map: always-on local Ollama + any hosted family with an API key set."""
     providers: dict[str, ModelProvider] = {}
 
+    from prism.providers.ollama import DEFAULT_BASE_URL as _OLLAMA_BASE
     from prism.providers.ollama import OllamaProvider
 
-    providers["local"] = OllamaProvider()
+    # PRISM_OLLAMA_BASE_URL points the local family at a non-default Ollama host (F-14).
+    providers["local"] = OllamaProvider(
+        base_url=os.environ.get("PRISM_OLLAMA_BASE_URL", _OLLAMA_BASE)
+    )
 
     # The Verifier specialist (a locally-served fine-tuned groundedness model) — opt-in via env.
     # When set, build_default_engine injects it as the primary citation-groundedness verifier;
@@ -61,21 +66,36 @@ def build_providers_from_env() -> dict[str, ModelProvider]:
 
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
     if anthropic_key:
+        from prism.providers.anthropic import DEFAULT_BASE_URL as _ANTHROPIC_BASE
         from prism.providers.anthropic import AnthropicProvider
 
-        providers["anthropic"] = AnthropicProvider(api_key=anthropic_key)
+        providers["anthropic"] = AnthropicProvider(
+            api_key=anthropic_key,
+            base_url=os.environ.get("PRISM_ANTHROPIC_BASE_URL", _ANTHROPIC_BASE),
+        )
 
     openai_key = os.environ.get("OPENAI_API_KEY")
     if openai_key:
+        # PRISM_OPENAI_BASE_URL makes an OpenAI-compatible endpoint a first-class verifier seat —
+        # e.g. Ollama Cloud's /v1 serving gpt-oss:120b-cloud as the cross-family A/B treatment
+        # (paired with PRISM_VERIFIER_MODEL_OPENAI), replacing the v1.4.0 one-off harness.
+        from prism.providers.openai import DEFAULT_BASE_URL as _OPENAI_BASE
         from prism.providers.openai import OpenAIProvider
 
-        providers["openai"] = OpenAIProvider(api_key=openai_key)
+        providers["openai"] = OpenAIProvider(
+            api_key=openai_key,
+            base_url=os.environ.get("PRISM_OPENAI_BASE_URL", _OPENAI_BASE),
+        )
 
     google_key = os.environ.get("GOOGLE_API_KEY")
     if google_key:
+        from prism.providers.google import DEFAULT_BASE_URL as _GOOGLE_BASE
         from prism.providers.google import GoogleProvider
 
-        providers["google"] = GoogleProvider(api_key=google_key)
+        providers["google"] = GoogleProvider(
+            api_key=google_key,
+            base_url=os.environ.get("PRISM_GOOGLE_BASE_URL", _GOOGLE_BASE),
+        )
 
     return providers
 
@@ -83,16 +103,24 @@ def build_providers_from_env() -> dict[str, ModelProvider]:
 def build_default_engine() -> VerificationEngine:
     """Register the default lenses and construct an engine with env-configured providers.
 
-    When the local Verifier specialist is configured (PRISM_LOCAL_VERIFIER_ENDPOINT), inject a
-    routing map that makes it the PRIMARY citation verifier (failing over to the hosted/mistral
-    verifiers behind it). The static DEFAULT_ROUTING_MAP is left untouched when not configured.
+    The routing map is resolved from env (F-14: PRISM_VERIFIER_MODEL_*), so a verifier model
+    deprecation or a cross-family seat (e.g. an Ollama-Cloud model via the OpenAI endpoint) is a
+    config change, not a source edit. When unset, the resolved map equals DEFAULT_ROUTING_MAP. When
+    the local Verifier specialist is configured (PRISM_LOCAL_VERIFIER_ENDPOINT), it is prepended as
+    the PRIMARY citation verifier (failing over to the hosted/mistral verifiers behind it).
     """
     register_default_lenses()
     providers = build_providers_from_env()
-    router = None
-    if "local-verifier" in providers:
-        from prism.core.routing import DEFAULT_ROUTING_MAP, FamilyRouter, with_local_verifier
+    from prism.core.routing import (
+        FamilyRouter,
+        resolve_routing_map,
+        routing_map_digest,
+        with_local_verifier,
+    )
 
+    routing_map = resolve_routing_map()
+    if "local-verifier" in providers:
         model_id = providers["local-verifier"].available_models[0]
-        router = FamilyRouter(routing_map=with_local_verifier(DEFAULT_ROUTING_MAP, model_id))
-    return VerificationEngine(providers=providers, router=router)
+        routing_map = with_local_verifier(routing_map, model_id)
+    routing_logger.info("routing_map_resolved", extra={"digest": routing_map_digest(routing_map)})
+    return VerificationEngine(providers=providers, router=FamilyRouter(routing_map=routing_map))

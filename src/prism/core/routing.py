@@ -18,7 +18,11 @@ yourself passing ``allow_same_family=True`` outside the family-AB control, you a
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from prism.core.observability import get_request_id, routing_logger
@@ -73,6 +77,55 @@ def with_local_verifier(
         (ModelFamily.LOCAL, "mistral-small:24b"),
     ]
     return out
+
+
+def resolve_routing_map(
+    base: dict[ModelFamily, list[tuple[ModelFamily, str]]] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> dict[ModelFamily, list[tuple[ModelFamily, str]]]:
+    """Apply env overrides to a routing map's verifier model ids (the F-14 config registry).
+
+    For each family ``F``, ``PRISM_VERIFIER_MODEL_<F.name>`` (e.g. ``PRISM_VERIFIER_MODEL_OPENAI``)
+    replaces the model id used wherever ``F`` is a VERIFIER in any caller's route. So a verifier
+    model deprecation is a CONFIG hotfix, not a source edit — and a cross-family seat (e.g. an
+    Ollama-Cloud model served via the OpenAI-compatible endpoint, the seat the v1.4.0 family-AB run
+    wired with a one-off harness) becomes a first-class route. The caller family is never overridden
+    here — only the model id a verifier route resolves to.
+
+    With NO ``PRISM_VERIFIER_MODEL_*`` set, ``base`` is returned UNCHANGED (byte-identical) so the
+    shipped routing contract and its tests are untouched when the registry is unused.
+    """
+    base = DEFAULT_ROUTING_MAP if base is None else base
+    environ = os.environ if env is None else env
+    overrides: dict[ModelFamily, str] = {}
+    for family in ModelFamily:
+        value = environ.get(f"PRISM_VERIFIER_MODEL_{family.name}")
+        if value:
+            overrides[family] = value
+    if not overrides:
+        return base
+    return {
+        caller: [(vf, overrides.get(vf, model_id)) for vf, model_id in routes]
+        for caller, routes in base.items()
+    }
+
+
+def routing_map_digest(routing_map: dict[ModelFamily, list[tuple[ModelFamily, str]]]) -> str:
+    """A stable short digest of a routing map.
+
+    Logged at engine construction so a verification run is traceable to the exact verifier registry
+    in effect (reproducibility for the family-AB). This is an OBSERVABILITY aid — it is NOT pinned
+    into the signed receipt (that touches the canonical-bytes schema and is a separate slice); the
+    receipt already records ``verifier_models`` (the models that actually ran).
+    """
+    canonical = json.dumps(
+        {
+            caller.value: [[vf.value, model_id] for vf, model_id in routes]
+            for caller, routes in routing_map.items()
+        },
+        sort_keys=True,
+    )
+    return "routing-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 # Circuit-breaker: open after this many consecutive failures within the window
 CIRCUIT_BREAKER_THRESHOLD = 3

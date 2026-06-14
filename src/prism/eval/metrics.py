@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import ast
 import math
+import random
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 from prism.core.submodularity import jaccard_similarity  # re-exported: finding-set rho
 
@@ -42,7 +44,12 @@ __all__ = [
     "coverage_gain",
     "ast_node_similarity",
     "wilson_interval",
+    "mcnemar_midp",
+    "benjamini_hochberg",
+    "cluster_bootstrap_ci",
 ]
+
+_T = TypeVar("_T")
 
 
 # --- Classification quality (per-lens verifier quality) ---
@@ -333,3 +340,87 @@ def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float,
     center = (p + z * z / (2 * total)) / denom
     margin = (z * math.sqrt(p * (1 - p) / total + z * z / (4 * total * total))) / denom
     return (max(0.0, center - margin), min(1.0, center + margin))
+
+
+# --- Paired-difference inference (the family-AB statistic) ---
+
+
+def mcnemar_midp(b: int, c: int) -> float:
+    """Two-sided mid-p value for McNemar's exact test on the discordant pair counts (b, c).
+
+    For a same-item paired design, the discordant pairs are ``b`` = (arm-1 correct, arm-2 wrong) and
+    ``c`` = the reverse; concordant pairs carry no information. Under H0 the ``b`` successes among
+    ``n = b + c`` discordant trials are Binomial(n, 0.5). The mid-p value adds only HALF the
+    probability mass of the observed point, which Fagerland, Lydersen & Laake 2013
+    (DOI:10.1186/1471-2288-13-91) show is better-calibrated than the exact-conditional test and far
+    better than the asymptotic-with-continuity variant. Pure Python; returns 1.0 when there are no
+    discordant pairs (no evidence of a difference).
+
+    Exact for ``n = b + c`` within float range (n well under ~1000 — a verifier A/B's discordant
+    count is bounded by the corpus size, far below that). The ``0.5**n`` factor would underflow only
+    at n beyond ~1070, which this design never reaches.
+    """
+    n = b + c
+    if n == 0:
+        return 1.0
+    k = min(b, c)
+    half = 0.5**n
+    less = sum(math.comb(n, i) for i in range(k)) * half  # P(X < k)
+    point = math.comb(n, k) * half  # P(X == k)
+    one_sided = less + 0.5 * point  # mid-p one-sided
+    return min(1.0, 2.0 * one_sided)
+
+
+def benjamini_hochberg(pvalues: Sequence[float], q: float = 0.10) -> list[bool]:
+    """Benjamini-Hochberg FDR control: per input p-value, whether it is REJECTED at level ``q``.
+
+    When several family-pair arms are tested at once, BH-FDR is uniformly more powerful than
+    Bonferroni (Benjamini & Hochberg 1995, DOI:10.1111/j.2517-6161.1995.tb02031.x) — Bonferroni
+    over-corrects as the arm count grows and every under-powered arm loses power. Finds the largest
+    rank ``i`` (1-based, p ascending) with ``p_(i) <= (i/m) q`` and rejects every hypothesis at or
+    below that p. The returned list aligns to the INPUT order.
+    """
+    m = len(pvalues)
+    if m == 0:
+        return []
+    order = sorted(range(m), key=lambda i: pvalues[i])
+    threshold_p = -1.0
+    for rank, idx in enumerate(order, start=1):
+        if pvalues[idx] <= (rank / m) * q:
+            threshold_p = pvalues[idx]
+    return [p <= threshold_p for p in pvalues]
+
+
+def cluster_bootstrap_ci(
+    clusters: Sequence[_T],
+    statistic: Callable[[Sequence[_T]], float | None],
+    *,
+    n_boot: int = 2000,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Percentile bootstrap CI that resamples CLUSTERS (not items) with replacement.
+
+    When items are nested in clusters (here: corpus items nested by problem), resampling items
+    independently understates the variance — the cluster bootstrap resamples whole clusters,
+    preserving the intra-cluster correlation (the study-swarm critic's within-pair-dependence
+    threat). ``statistic`` maps a resampled list of clusters to the scalar of interest, or ``None``
+    when it is undefined for that resample (skipped). Deterministic given ``seed``; returns (0, 0)
+    when there are no clusters or every resample was undefined.
+    """
+    m = len(clusters)
+    if m == 0:
+        return (0.0, 0.0)
+    rng = random.Random(seed)
+    stats: list[float] = []
+    for _ in range(n_boot):
+        resample = [clusters[rng.randrange(m)] for _ in range(m)]
+        value = statistic(resample)
+        if value is not None:
+            stats.append(value)
+    if not stats:
+        return (0.0, 0.0)
+    stats.sort()
+    lo_idx = int((alpha / 2) * len(stats))
+    hi_idx = min(len(stats) - 1, int((1 - alpha / 2) * len(stats)))
+    return (stats[lo_idx], stats[hi_idx])
