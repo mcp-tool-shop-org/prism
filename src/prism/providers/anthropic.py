@@ -26,7 +26,10 @@ class AnthropicProvider(ModelProvider):
     def __init__(
         self,
         api_key: str,
-        default_model: str = "claude-haiku-4-5-20251001",
+        # Durable ALIAS, not a dated snapshot: a dated id (e.g. ``claude-haiku-4-5-20251001``) is
+        # retired on a schedule and would dead-end this provider to a 404 once gone. The alias rolls
+        # forward to the current snapshot. Override per deployment with ``PRISM_ANTHROPIC_MODEL``.
+        default_model: str = "claude-haiku-4-5",
         base_url: str = DEFAULT_BASE_URL,
     ) -> None:
         self._api_key = api_key
@@ -48,7 +51,7 @@ class AnthropicProvider(ModelProvider):
     @property
     def available_models(self) -> list[str]:
         return [
-            "claude-haiku-4-5-20251001",
+            "claude-haiku-4-5",
             "claude-sonnet-4-6",
         ]
 
