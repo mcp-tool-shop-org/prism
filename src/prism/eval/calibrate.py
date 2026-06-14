@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 
 from prism.core.routing import DEFAULT_ROUTING_MAP
 from prism.core.types import ModelFamily
+from prism.eval.metrics import mcnemar_midp
 from prism.eval.runner import EvalRun, RunRecord
 from prism.providers.base import ModelProvider
 
@@ -170,6 +171,9 @@ class FamilyAB:
     family_different_correct: int = 0
     same_family_correct: int = 0
     delta_ci: tuple[float, float] = (0.0, 0.0)
+    # Mid-p McNemar two-sided p-value on the discordant pairs (Fagerland 2013 — better-calibrated
+    # than the exact-conditional test). Complements the CI: < 0.05 => the paired delta is real.
+    midp_pvalue: float = 1.0
     # F-01 1F: the resolved verifier model id(s) each arm actually used, so the report names WHICH
     # models produced the delta (honest provenance for both arms, not just the treatment).
     family_different_model_ids: list[str] = field(default_factory=list)
@@ -246,14 +250,17 @@ def compute_family_ab(treatment_run: EvalRun, control_run: EvalRun) -> FamilyAB:
     sf_acc = sf_correct / n if n else 0.0
     delta = (b - c) / n if n else 0.0  # identical to fd_acc - sf_acc over the paired set
     delta_ci = _mcnemar_delta_ci(b, c, n)
+    midp = mcnemar_midp(b, c)
 
     note = (
         "Positive delta = the family-different lock helps (a same-family verifier self-prefers and "
         "misses defects, per Panickssery 2024). Delta is PAIRED (McNemar) over the samples both "
-        "arms measured; the CI is the Wald interval on the correlated-proportions difference. "
-        "Meaningful only with REAL models; the OFFLINE control uses a self-preferring MOCK to "
-        "prove the wiring deterministically — its positive delta is machinery, NOT self-preference "
-        "evidence."
+        "arms measured; the CI is the Wald interval on the correlated-proportions difference, and "
+        "midp_pvalue is the better-calibrated mid-p McNemar test (Fagerland 2013). Meaningful only "
+        "with REAL models; the OFFLINE control uses a self-preferring MOCK to prove the wiring "
+        "deterministically — its positive delta is machinery, NOT self-preference evidence. NOTE: "
+        "this 2-arm same-corpus design conflates family with verifier CAPABILITY; the "
+        "validity-clean estimator is the within-judge round-robin in prism.eval.familyab."
     )
     return FamilyAB(
         family_different_accuracy=fd_acc,
@@ -264,6 +271,7 @@ def compute_family_ab(treatment_run: EvalRun, control_run: EvalRun) -> FamilyAB:
         family_different_correct=fd_correct,
         same_family_correct=sf_correct,
         delta_ci=delta_ci,
+        midp_pvalue=midp,
         family_different_model_ids=sorted(set(treatment_run.resolved_model_ids)),
         same_family_model_ids=sorted(set(control_run.resolved_model_ids)),
     )
