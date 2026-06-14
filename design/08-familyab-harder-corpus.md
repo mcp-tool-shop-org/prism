@@ -264,15 +264,20 @@ source text) unless flagged. Numbers reference the study-swarm lanes.
    (failing-test-signature match) + perplexity covariate + ModuleNotFoundError-skip.
 3. ✅ **Estimator hardening** — min-cluster gate + TOST + BY-FDR (wild-bootstrap deferred; gate is the
    operative small-cluster protection).
-4. ⏳ **`prism eval --round-robin` CLI** (objective #2): build/load the family-AB corpus → per-family
-   bypass engines (in `cli/main.py`, `allow_same_family`, per the Knight-Capital guard) →
-   `familyab.run_round_robin` → `compute_self_preference` → report section + signed run-receipt → publish
-   to `eval/RESULTS.md`.
+   Also: `eval/problem_select.stratified_by_difficulty` + a `deconfound_eligible_problems` manifest
+   diagnostic — compose a difficulty MIX (real-model smoke found the deconfound stratum needs >=2
+   families to solve a problem cleanly, which hard problems rarely allow).
+4. ✅ **`prism eval --round-robin` CLI** (objective #2): `--familyab-corpus <dir>` → per-family bypass
+   engines (in `cli/main.py`, `allow_same_family`, per the Knight-Capital guard) →
+   `familyab.run_round_robin` → `compute_self_preference` (`--sesoi`, `--min-problems`) → `round_robin.md`
+   + signed run-receipt. Offline integration test proves the wiring end-to-end.
 5. ⏳ **Pre-register + RUN + publish**: pin the pre-registration block in `RESULTS.md`, run the
    round-robin on the harder corpus (local families + cloud seat, free), publish the number / bound.
 
-Validation in progress: a REAL-model end-to-end smoke (generate → label → deconfound on local
-families over LCB-functional problems) + the Docker labeler image build, before wiring the CLI.
+Validation DONE: REAL-model end-to-end smoke (generate → label → mutate → natural-bugs on local
+families over LCB-functional) + the Docker labeler image built (1.04 GB; numpy/pandas/scipy/sklearn;
+real container labeling clean→pass / buggy→fail). The deconfounder is unit-validated (same-bug kept,
+different-bug dropped); its real-model trigger needs the difficulty mix above.
 
 Each wave: build + `uv run python -m {ruff,mypy,pytest}` green; tests ship test-first; line-length 100;
 mypy --strict.
