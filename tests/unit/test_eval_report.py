@@ -279,12 +279,15 @@ class TestUnavailableExcludedFromMetrics:
         assert math.isclose(report.ece, expected_ece)
 
 
-class TestCitationPromotedToPerLensTable:
-    """F-01 v1.1 / wedge fork: 'citation' is the LARGEST positive set but was invisible because the
-    per-lens table looped over _LLM_LENSES (which omits it). Promote it to the per-lens QUALITY
-    table ONLY — the diversity matrix / Krippendorff / coverage_gain still use the 4 _LLM_LENSES."""
+class TestCitationMeasuredByVerdictNotLensFail:
+    """F-01 fix: 'citation' must NOT appear in the per-lens fail-recall table. The citation pipeline
+    maps REFUSE/REVISE -> FAIL but ESCALATE -> UNCERTAIN (engine._citation_as_lensresult), and the
+    live oracle ESCALATES many citation positives, so a fail-recall row is structurally ~0 and
+    misleading (a real run showed 0.000 recall while citation VERDICT accuracy was 0.667). Citations
+    are measured by VERDICT instead — off-accept recall (escalate counts) + a verdict breakdown."""
 
-    def test_per_lens_table_includes_a_citation_row(self) -> None:
+    def test_per_lens_table_has_no_citation_row(self) -> None:
+        """The per-lens table shows ONLY the 4 LLM lenses — never a 'citation' fail-recall row."""
         from prism.eval.report import render_markdown
 
         bug = _citation_sample("cit-bug", positive=True)
@@ -295,15 +298,13 @@ class TestCitationPromotedToPerLensTable:
         ]
         report = summarize(_run([bug, clean], records, n_runs=1))
         lenses = {lr.lens for lr in report.per_lens}
-        assert "citation" in lenses, f"citation missing from per-lens table: {lenses}"
-        # The citation lens scored a real positive (the buggy citation was flagged).
-        cit = next(lr for lr in report.per_lens if lr.lens == "citation")
-        assert cit.positives == 1
-        # And it renders into the markdown table.
+        assert "citation" not in lenses, f"citation leaked into per-lens table: {lenses}"
+        # Only the 4 LLM lenses may ever appear in the per-lens table.
+        assert lenses <= {"contract_completeness", "cross_boundary", "invariant", "groundedness"}
         md = render_markdown(report)
-        assert "| citation |" in md
+        assert "| citation |" not in md  # no fail-recall row rendered
 
-    def test_diversity_matrix_uses_only_the_four_llm_lenses(self) -> None:
+    def test_diversity_matrix_unchanged_uses_only_the_four_llm_lenses(self) -> None:
         """A full-4-lens code sample + a citation sample: the diversity matrix must be built from
         the 4 _LLM_LENSES only — the citation sample (no 4-lens decision) must NOT enter it, and the
         pairwise-kappa keys must never mention 'citation'."""
@@ -314,9 +315,9 @@ class TestCitationPromotedToPerLensTable:
             _citation_record("cit-bug", 0, verdict="refuse", confidence=0.8),
         ]
         report = summarize(_run([code, cit], records, n_runs=1))
-        # citation is in the quality table...
-        assert "citation" in {lr.lens for lr in report.per_lens}
-        # ...but NEVER in the diversity matrix (kappa pairs are only among the 4 LLM lenses).
+        # citation is NOT in the per-lens quality table...
+        assert "citation" not in {lr.lens for lr in report.per_lens}
+        # ...and NEVER in the diversity matrix (kappa pairs are only among the 4 LLM lenses).
         for pair in report.pairwise_kappa:
             assert "citation" not in pair, f"diversity matrix leaked citation: {pair}"
         # The Krippendorff units came from the single full-4-lens sample, so alpha is computable
@@ -325,6 +326,113 @@ class TestCitationPromotedToPerLensTable:
         for pair in report.pairwise_kappa:
             a, b = pair.split(",")
             assert a in llm and b in llm
+
+    def test_escalated_positive_citation_counts_as_flagged_in_offaccept_recall(self) -> None:
+        """THE EXACT BUG: a positive citation whose verdict is ESCALATE must count as CAUGHT in
+        off-accept recall (escalate != fail, but escalate == not-blindly-accepted). A positive
+        citation that is ACCEPTed is a MISS. Here: 1 escalated positive + 1 accepted positive =>
+        off-accept recall 0.5 (the escalate is flagged, the accept is the miss)."""
+        from prism.eval.report import render_markdown
+
+        escalated = _citation_sample("cit-escalate", positive=True)
+        accepted = _citation_sample("cit-accept", positive=True)
+        records = [
+            _citation_record("cit-escalate", 0, verdict="escalate", confidence=0.5),
+            _citation_record("cit-accept", 0, verdict="accept", confidence=0.5),
+        ]
+        report = summarize(_run([escalated, accepted], records, n_runs=1))
+        assert report.citation_n == 2
+        assert report.citation_positives == 2
+        # escalate is flagged, accept is a miss => 1/2.
+        assert report.citation_offaccept_recall == 0.5
+        # Verdict breakdown counts both.
+        assert report.citation_verdict_breakdown["escalate"] == 1
+        assert report.citation_verdict_breakdown["accept"] == 1
+        md = render_markdown(report)
+        assert "## Citation pipeline" in md
+        assert "escalate=1" in md and "accept=1" in md
+        assert "VERDICT" in md  # the explanatory note is present
+
+    def test_citation_offaccept_recall_na_when_no_positives(self) -> None:
+        """No positive citation samples => off-accept recall is None (guarded), rendered n/a."""
+        from prism.eval.report import render_markdown
+
+        clean = _citation_sample("cit-clean", positive=False)
+        records = [_citation_record("cit-clean", 0, verdict="accept", confidence=0.8)]
+        report = summarize(_run([clean], records, n_runs=1))
+        assert report.citation_n == 1
+        assert report.citation_positives == 0
+        assert report.citation_offaccept_recall is None
+        md = render_markdown(report)
+        assert "## Citation pipeline" in md
+        assert "n/a (no positives)" in md
+
+
+class TestContaminationAccuracyDelta:
+    """F-01 fix B: the report must compute a contaminated(public/QuixBugs)-vs-uncontaminated VERDICT
+    accuracy DELTA — contaminated is the CEILING (verifiers may have memorized QuixBugs),
+    uncontaminated is the honest signal. Div-by-zero guarded when a side is empty."""
+
+    def test_split_computed_on_mixed_fixture_known_answer(self) -> None:
+        from prism.eval.report import render_markdown
+
+        # Two contaminated (quixbugs-) samples: one correct, one wrong => contaminated acc 0.5.
+        # Two authored samples: both correct => uncontaminated acc 1.0. delta = 1.0 - 0.5 = 0.5.
+        quix_ok = Sample(
+            id="quixbugs-gcd-buggy",
+            artifact_type="code",
+            content="def gcd(a, b):\n    return gcd(a % b, b)\n",
+            intent="Return the greatest common divisor of a and b.",
+            positive=True,
+            target_lens="invariant",
+            bug_class="wrong_recursive_args",
+            expected_verdict="revise",
+            split="public",
+        )
+        quix_wrong = Sample(
+            id="quixbugs-bitcount-buggy",
+            artifact_type="code",
+            content="def bitcount(n):\n    count = 0\n    while n:\n        n ^= n - 1\n    return count\n",  # noqa: E501
+            intent="Count the set bits in n.",
+            positive=True,
+            target_lens="invariant",
+            bug_class="wrong_op",
+            expected_verdict="revise",
+            split="public",
+        )
+        authored_a = _sample("authored-a", positive=True)
+        authored_b = _sample("authored-b", positive=True)
+        records = [
+            _ok_record("quixbugs-gcd-buggy", 0, verdict="refuse", confidence=0.8),  # correct
+            _ok_record("quixbugs-bitcount-buggy", 0, verdict="accept", confidence=0.8),  # WRONG
+            _ok_record("authored-a", 0, verdict="refuse", confidence=0.8),  # correct
+            _ok_record("authored-b", 0, verdict="revise", confidence=0.8),  # correct (off-accept)
+        ]
+        report = summarize(
+            _run([quix_ok, quix_wrong, authored_a, authored_b], records, n_runs=1)
+        )
+        assert report.contaminated_n == 2
+        assert report.uncontaminated_n == 2
+        assert report.contaminated_accuracy == 0.5
+        assert report.uncontaminated_accuracy == 1.0
+        assert math.isclose(report.contamination_accuracy_delta, 0.5)
+        md = render_markdown(report)
+        assert "[CEILING]" in md and "[honest]" in md
+
+    def test_div_by_zero_guarded_when_a_side_is_empty(self) -> None:
+        """No contaminated samples at all => contaminated side is n/a (None), delta is None."""
+        from prism.eval.report import render_markdown
+
+        s = _sample("authored-only", positive=True)
+        records = [_ok_record("authored-only", 0, verdict="refuse", confidence=0.8)]
+        report = summarize(_run([s], records, n_runs=1))
+        assert report.contaminated_n == 0
+        assert report.contaminated_accuracy is None
+        assert report.uncontaminated_n == 1
+        assert report.uncontaminated_accuracy == 1.0
+        assert report.contamination_accuracy_delta is None
+        md = render_markdown(report)
+        assert "n/a" in md  # the contaminated side renders n/a
 
 
 class TestContaminationCaveat:

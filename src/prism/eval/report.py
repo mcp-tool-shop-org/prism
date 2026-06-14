@@ -28,13 +28,15 @@ from prism.eval.metrics import (
 from prism.eval.runner import EvalRun, RunRecord
 
 _LLM_LENSES = ("contract_completeness", "cross_boundary", "invariant", "groundedness")
-# The per-lens QUALITY table reports precision/recall/MCC per lens's target class. It includes
-# 'citation' (the largest positive set — 10 samples) which the engine DOES emit as a LensResult
-# (engine.py: lens="citation"), so it has a real per-sample fail signal to score. 'citation' is
-# DELIBERATELY excluded from _LLM_LENSES below: the diversity matrix / Krippendorff / coverage_gain
-# need an all-4-lens decision that the single-path citation adjudication does not produce, so those
-# stay on _LLM_LENSES. (Resolves the per-lens fork: citation is in the quality table ONLY.)
-_QUALITY_LENSES = (*_LLM_LENSES, "citation")
+# The per-lens QUALITY table reports precision/recall/MCC per lens's target class. It is the FOUR
+# code/tool lenses ONLY. 'citation' is DELIBERATELY excluded: the citation pipeline maps
+# REFUSE/REVISE -> FAIL but ESCALATE -> UNCERTAIN (engine.py: _citation_as_lensresult), and the
+# live oracle ESCALATES many citation positives (an unconfirmable id is escalated, not lens-failed).
+# So a fail-recall row for 'citation' is STRUCTURALLY ~0 and misleading — a real run showed
+# 0.000 recall/precision/MCC while citation VERDICT accuracy was 0.667. Citations are measured by
+# VERDICT instead (see the "Citation pipeline" section / ``citation_*`` fields below), where
+# ESCALATE correctly counts as "caught/handled". The diversity matrix / Krippendorff / coverage_gain
+# also use _LLM_LENSES (they need an all-4-lens decision the citation single path never produces).
 _OFF_ACCEPT = {"refuse", "revise", "escalate"}
 
 
@@ -84,6 +86,22 @@ class ReportData:
     # (QuixBugs). >0 means the public-split numbers are a CEILING; render_markdown prints a caveat.
     # Defaulted so older callers still construct.
     contaminated_sample_count: int = 0
+    # Citation pipeline (measured by VERDICT, not lens-fail). The citation pipeline maps
+    # REFUSE/REVISE -> FAIL but ESCALATE -> UNCERTAIN, so a lens fail-recall row is structurally ~0
+    # and was misleading; we measure off-accept recall (escalate counts as caught) + a verdict
+    # breakdown instead. Defaulted so older callers still construct.
+    citation_n: int = 0
+    citation_positives: int = 0
+    citation_offaccept_recall: float | None = None  # None when there are no citation positives
+    citation_verdict_breakdown: dict[str, int] = field(default_factory=dict)
+    # F-01: contaminated (public/QuixBugs) vs uncontaminated VERDICT-accuracy split. Contaminated is
+    # the CEILING (verifiers may have memorized QuixBugs); uncontaminated is the honest signal. None
+    # when a side has 0 measured samples (div-by-zero guard). Defaulted so older callers construct.
+    contaminated_accuracy: float | None = None
+    contaminated_n: int = 0
+    uncontaminated_accuracy: float | None = None
+    uncontaminated_n: int = 0
+    contamination_accuracy_delta: float | None = None  # uncontaminated - contaminated (if both)
     notes: list[str] = field(default_factory=list)
     family_ab: FamilyAB | None = None  # set by the CLI when --family-ab runs the control
 
@@ -141,12 +159,12 @@ def summarize(run: EvalRun) -> ReportData:
         modal = _modal_verdict(genuine)
         samp_verdict[sid] = modal
         samp_conf[sid] = statistics.fmean(r.confidence for r in genuine)
-        # Populate over _QUALITY_LENSES (includes 'citation') so the per-lens table can score the
-        # citation class. The diversity matrix below filters on _LLM_LENSES only, so a stray
-        # 'citation' key here never enters it (a citation sample lacks the 4 code/tool decisions).
+        # Populate over the 4 _LLM_LENSES only. 'citation' is intentionally NOT scored by lens-fail
+        # here — its fail-recall is structurally ~0 (ESCALATE -> UNCERTAIN, not FAIL); citations are
+        # measured by VERDICT in the dedicated citation section below.
         samp_fail[sid] = {
             lens: bool(_majority_fail(genuine, lens))
-            for lens in _QUALITY_LENSES
+            for lens in _LLM_LENSES
             if _majority_fail(genuine, lens) is not None
         }
         consistencies.append(sum(1 for r in genuine if r.verdict == modal) / len(genuine))
@@ -155,7 +173,7 @@ def summarize(run: EvalRun) -> ReportData:
     # Only samples with a genuine measurement count — an all-unavailable sample has no y_pred and
     # would otherwise be scored as a forced false-negative (EVL-A-001).
     per_lens: list[LensReport] = []
-    for lens in _QUALITY_LENSES:  # includes 'citation' — the quality table only (not diversity)
+    for lens in _LLM_LENSES:  # the 4 code/tool lenses only — citation is measured by verdict
         rel = [s for s in run.samples.values() if s.target_lens == lens and s.id in measured_ids]
         if not rel:
             continue
@@ -223,6 +241,36 @@ def summarize(run: EvalRun) -> ReportData:
         by_class_correct[run.samples[sid].artifact_type].append(correct[sid])
     overall = statistics.fmean(correct.values()) if correct else 0.0
     acc_by_class = {cls: statistics.fmean(vals) for cls, vals in by_class_correct.items()}
+
+    # Citation pipeline, measured by VERDICT (not lens-fail). The pipeline ESCALATES unconfirmable
+    # citations rather than emitting a lens FAIL, so a fail-recall row is structurally ~0; instead
+    # we measure off-accept recall over positive citation samples (modal verdict in
+    # {refuse, revise, escalate} == the bad citation was NOT blindly accepted) and a verdict
+    # breakdown. Selector: artifact_type == "citations" (the reliable selector — every citation
+    # sample carries it; target_lens == "citation" is also set, but artifact_type is the contract).
+    cit_ids = [sid for sid in measured_ids if run.samples[sid].artifact_type == "citations"]
+    cit_positive_ids = [sid for sid in cit_ids if run.samples[sid].positive]
+    cit_flagged = sum(1 for sid in cit_positive_ids if samp_verdict[sid] in _OFF_ACCEPT)
+    citation_offaccept_recall = (
+        (cit_flagged / len(cit_positive_ids)) if cit_positive_ids else None
+    )
+    citation_verdict_breakdown: dict[str, int] = {
+        v: sum(1 for sid in cit_ids if samp_verdict[sid] == v)
+        for v in ("accept", "revise", "refuse", "escalate")
+    }
+
+    # F-01: contaminated (public/QuixBugs) vs uncontaminated VERDICT-accuracy split, over the SAME
+    # ``correct`` map. Contaminated = CEILING (verifiers may have memorized QuixBugs); uncontam =
+    # honest signal. Guard div-by-zero: a side with 0 measured samples renders n/a (None).
+    contam_correct = [correct[sid] for sid in measured_ids if is_contaminated(sid)]
+    uncontam_correct = [correct[sid] for sid in measured_ids if not is_contaminated(sid)]
+    contaminated_accuracy = statistics.fmean(contam_correct) if contam_correct else None
+    uncontaminated_accuracy = statistics.fmean(uncontam_correct) if uncontam_correct else None
+    contamination_accuracy_delta = (
+        uncontaminated_accuracy - contaminated_accuracy
+        if contaminated_accuracy is not None and uncontaminated_accuracy is not None
+        else None
+    )
 
     # Calibration: confidence vs flag-correctness, over measured samples' genuine confidences.
     ids = [i for i in run.samples if i in measured_ids]
@@ -307,6 +355,15 @@ def summarize(run: EvalRun) -> ReportData:
         rho_best_cutoff=sweep.best_cutoff,
         rho_note=sweep.note,
         contaminated_sample_count=contaminated_n,
+        citation_n=len(cit_ids),
+        citation_positives=len(cit_positive_ids),
+        citation_offaccept_recall=citation_offaccept_recall,
+        citation_verdict_breakdown=citation_verdict_breakdown,
+        contaminated_accuracy=contaminated_accuracy,
+        contaminated_n=len(contam_correct),
+        uncontaminated_accuracy=uncontaminated_accuracy,
+        uncontaminated_n=len(uncontam_correct),
+        contamination_accuracy_delta=contamination_accuracy_delta,
         notes=notes,
     )
 
@@ -361,6 +418,34 @@ def render_markdown(report: ReportData) -> str:
         )
     lines.append("")
 
+    if report.citation_n:
+        lines.append("## Citation pipeline")
+        lines.append("")
+        recall = (
+            "n/a (no positives)"
+            if report.citation_offaccept_recall is None
+            else (
+                f"{_fmt(report.citation_offaccept_recall)} "
+                f"({report.citation_positives} positive citation sample(s))"
+            )
+        )
+        lines.append(f"- Off-accept recall (bad citation NOT blindly accepted): **{recall}**")
+        cit_acc = report.verdict_accuracy_by_class.get("citations")
+        if cit_acc is not None:
+            n = report.citation_n
+            lines.append(f"- Citation verdict accuracy: **{_fmt(cit_acc)}** (n={n})")
+        breakdown = ", ".join(
+            f"{v}={report.citation_verdict_breakdown.get(v, 0)}"
+            for v in ("accept", "revise", "refuse", "escalate")
+        )
+        lines.append(f"- Verdict breakdown: {breakdown}")
+        lines.append(
+            "- Citations are measured by VERDICT (the pipeline ESCALATES unconfirmable citations "
+            "rather than emitting a lens FAIL), so the per-lens fail-recall table above "
+            "intentionally excludes them."
+        )
+        lines.append("")
+
     lines.append("## Diversity (do the lenses give independent signal?)")
     lines.append("")
     alpha = "n/a" if report.krippendorff_alpha is None else _fmt(report.krippendorff_alpha)
@@ -394,6 +479,27 @@ def render_markdown(report: ReportData) -> str:
     lines.append(f"- Overall verdict accuracy (flag vs accept): **{overall}**")
     for cls, acc in sorted(report.verdict_accuracy_by_class.items()):
         lines.append(f"  - {cls}: {_fmt(acc)}")
+    # F-01: contaminated (public/QuixBugs) vs uncontaminated accuracy split. Contaminated is the
+    # CEILING (verifiers may have memorized QuixBugs); uncontaminated is the honest signal.
+    contam = (
+        "n/a"
+        if report.contaminated_accuracy is None
+        else f"{_fmt(report.contaminated_accuracy)} (n={report.contaminated_n})"
+    )
+    uncontam = (
+        "n/a"
+        if report.uncontaminated_accuracy is None
+        else f"{_fmt(report.uncontaminated_accuracy)} (n={report.uncontaminated_n})"
+    )
+    delta = (
+        "n/a"
+        if report.contamination_accuracy_delta is None
+        else _fmt(report.contamination_accuracy_delta)
+    )
+    lines.append(
+        f"- Contaminated (public/QuixBugs) accuracy: {contam} [CEILING] vs uncontaminated: "
+        f"{uncontam} [honest]; delta {delta}."
+    )
     ece, brier = _fmt(report.ece), _fmt(report.brier)
     lines.append(f"- Confidence calibration: ECE **{ece}**, Brier **{brier}**")
     lines.append(f"- Verdict consistency across runs: {_fmt(report.verdict_consistency)}")
