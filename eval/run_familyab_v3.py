@@ -23,10 +23,10 @@ from prism.eval.problem_select import count_by_difficulty, stratified_by_difficu
 
 OUT = Path("eval/corpus-familyab-v3")
 FAMILIES = [
-    FamilySpec("gpt-oss", "gpt-oss:120b-cloud"),  # OpenAI lineage (cloud)
-    FamilySpec("glm", "glm-4.6:cloud"),  # Zhipu lineage (cloud)
-    FamilySpec("qwen", "qwen3-coder-next:cloud"),  # Qwen lineage (cloud)
     FamilySpec("mistral", "mistral-small:24b"),  # Mistral lineage (local)
+    FamilySpec("granite", "granite4.1:30b"),  # IBM Granite lineage (local)
+    FamilySpec("qwen", "qwen3.6:latest"),  # Qwen lineage (local)
+    FamilySpec("gemma", "gemma4:31b"),  # Google Gemma lineage (local)
 ]
 PER_DIFFICULTY = {"easy": 14, "medium": 10, "hard": 4}
 START_DATE = "2025-01-01"  # post-cutoff window for the participating families

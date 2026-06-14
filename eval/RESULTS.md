@@ -232,9 +232,12 @@ design/08). **Pinned BEFORE seeing any data** so the decision can't be p-hacked.
 - **Estimand:** within-judge self_preference(V) = false_accept_rate(V on its OWN family's known-buggy
   artifacts) − false_accept_rate(V on OTHER families' buggy artifacts), aggregated (mean) over
   interpretable families. V's capability cancels inside the contrast (not the v1.4.0 confound).
-- **Families (4 distinct lineages):** `gpt-oss:120b-cloud` (OpenAI), `glm-4.6:cloud` (Zhipu),
-  `qwen3-coder-next:cloud` (Qwen), `mistral-small:24b` (Mistral). Each generates AND judges; served via
-  the local Ollama daemon (cloud seats transparently). Diversity-beats-count (Verga 2024).
+- **Families (4 distinct LOCAL lineages):** `mistral-small:24b` (Mistral), `granite4.1:30b` (IBM
+  Granite), `qwen3.6:latest` (Qwen), `gemma4:31b` (Google) — the rig's zero-cost panel; each generates
+  AND judges. Diversity-beats-count (Verga 2024). (An earlier cloud roster — gpt-oss/glm/qwen-coder —
+  was dropped: Ollama Cloud was transiently slow during the first attempt; local seats are reliable +
+  zero-cost. No number was published before this re-lock, so the roster swap preserves "locked before
+  data".)
 - **Corpus:** LiveCodeBench-functional, release_v6, post-cutoff window `start_date=2025-01-01`,
   difficulty-stratified `{easy: 14, medium: 10, hard: 4}` (a mix so the deconfound stratum populates).
   Execution-labeled (no LLM grader). Natural-majority buggy stratum + execution-verified mutants + the
