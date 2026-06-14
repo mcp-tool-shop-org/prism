@@ -683,7 +683,7 @@ def _render_round_robin_markdown(
         )
     lines.append("")
     lines.append(
-        "> self_preference(V) = false_accept_rate(V on OWN-family bugs) − "
+        "> self_preference(V) = false_accept_rate(V on OWN-family bugs) - "
         "false_accept_rate(V on OTHER-family bugs); V's capability cancels inside the contrast. A "
         "positive aggregate whose CI excludes 0 is clean Lock-1 evidence; equivalence bounds a "
         "null below the SESOI."
@@ -788,7 +788,11 @@ def _run_round_robin_cli(
         _write_round_robin_receipt(rr_store, result, label, corpus_hash, out)
     finally:
         rr_store.close()
-    click.echo(md)
+    try:
+        click.echo(md)
+    except UnicodeEncodeError:
+        # a legacy console (e.g. cp1252) can't encode a char; the report file keeps full UTF-8
+        click.echo(md.encode("ascii", "replace").decode("ascii"))
 
 
 def _render_cjb_markdown(summary: object, label: str, runs: int, content_hash: str) -> str:
