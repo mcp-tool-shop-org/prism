@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-06-14
+
 ### Added
 - **Family-different A/B v2 — the validity-clean within-judge round-robin.** The v1.4.0 `--family-ab`
   was a *confounded* null (it compared a family-different model against a same-family model over a
@@ -40,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Dated-model ops time-bomb:** the Anthropic provider default `claude-haiku-4-5-20251001` (a dated
   snapshot that retires on a schedule) → the durable alias `claude-haiku-4-5`; overridable via
   `PRISM_ANTHROPIC_MODEL`.
+- **Stale runtime version:** `prism.__version__` (surfaced by `prism --version` and the HTTP
+  `/healthz` + OpenAPI `version`) had been pinned at `1.0.0` since the 1.0 release; it now tracks the
+  package version.
 
 ## [1.4.0] - 2026-06-14
 
