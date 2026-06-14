@@ -251,3 +251,48 @@ design/08). **Pinned BEFORE seeing any data** so the decision can't be p-hacked.
 
 > Result appended below once the run completes. The number traces to the signed run-receipt
 > (`round-robin-receipt.json`) + this pre-registration + the corpus content-hash.
+
+### RESULT (run 2026-06-14, decision applied per the locked rule)
+
+Report: `eval/report/familyab-v3/round_robin.md` · receipt: `round-robin-receipt.json`
+(Ed25519, `kid ed25519-611e3cc65671873e`, `signature_valid: true`, schema v5).
+Corpus: 28 problem-clusters (LiveCodeBench-functional, 2025-01-01+, mix 14/10/4),
+execution-labeled; 892 verifier records across the 4-family round-robin.
+Corpus content-hash `a62a307b3bf700f98a6fd11a09e15e9aa3a316a77fb467c3871073465e297bf1`
+(`eval/corpus-familyab-v3/FAMILYAB_MANIFEST.json`; corpus + report dirs are gitignored
+runtime artifacts — the number is reproduced by re-running the harness against this hash).
+
+| Verifier | self_pref | FA own / other | bal-acc | interp. |
+|---|---|---|---|---|
+| gemma   | **-0.022** | 0.05 / 0.07 | 0.89 | yes |
+| granite | **+0.118** | 0.22 / 0.10 | 0.80 | yes |
+| mistral | **-0.038** | 0.03 / 0.06 | 0.64 | yes |
+| qwen    | **+0.021** | 0.15 / 0.13 | 0.86 | yes |
+
+**Aggregate self_preference: +0.020** — 95% cluster-bootstrap CI **[-0.014, +0.082]** ·
+TOST 90% CI [-0.008, +0.068] (SESOI ±0.050) → **decision: INCONCLUSIVE**.
+
+**What this run bought (honest read):**
+
+1. **The ceiling effect is gone.** The v1.5.0 pilot was a degenerate null —
+   self_preference +0.000, CI [0, 0] — because every verifier refuted every bug
+   (FAR ≡ 0). This corpus lands false-accept rates squarely in (0, 1): per-family
+   FA from 0.03 to 0.22, own and other both non-trivial. The estimator now has the
+   variance it needs to *see* self-preference if it exists. **Method validated on
+   prism's own data.**
+2. **The signal is real but the panel aggregate is under-powered.** Granite
+   false-accepts its **own** family's bugs at 0.22 vs 0.10 on others — a **+0.118**
+   self-preference, the exact Lock-1 direction. But it doesn't carry the 4-family
+   mean: gemma and mistral lean slightly *negative*, so the aggregate sits at +0.020
+   with a CI that includes 0. At n=28 clusters the bootstrap is wide; per the locked
+   rule (CI excludes 0 → superiority) this is **inconclusive**, not equivalence —
+   the CI is too wide to bound the effect below the SESOI either.
+3. **Direction is suggestive, not decisive.** 2 of 4 families positive, the largest
+   effect (granite) clean and in-direction, aggregate point estimate positive — but
+   no claim survives the pre-registered gate. The borrowed Panickssery anchor is
+   **not yet** retired on our own data; it's narrowed.
+
+**What closes it:** scale the cluster count (more problems, same locked pipeline) to
+tighten the bootstrap CI; granite's per-family delta suggests the effect is detectable
+at a single-verifier grain before the panel mean is. The pre-registration and decision
+rule carry forward unchanged — only n grows.
