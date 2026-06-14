@@ -91,11 +91,21 @@ Além do código, das chamadas de ferramentas e das citações, o Prism avalia a
 O Prism foi desenvolvido para ser **mensurado**, e não apenas para fazer afirmações. O comando `prism eval` executa as lentes em um corpus rotulado e gera relatórios — com base nos próprios dados do Prism — sobre a precisão/revocação/MCC por lente, a matriz de diversidade inter-lente (alfa de Krippendorff + kappa de Cohen por pares), o ganho de cobertura submodular, a precisão do veredicto e a calibração da confiança (ECE/Brier), cada um com um intervalo de confiança honesto.
 
 ```bash
-prism eval --split public --runs 3     # measure against the bundled corpus (needs a verifier)
+prism eval --split all --runs 1        # measure against the bundled corpus (needs a verifier)
 prism eval --offline                    # deterministic mock (CI smoke; NOT a real measurement)
 ```
 
-Consulte o [manual de avaliação](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/) para obter informações sobre o método e um exemplo prático.
+**Medido, não afirmado** ([execução mais recente →](eval/RESULTS.md) — Ollama local `mistral-small:24b`, 111 amostras, 2026-06-14):
+
+| O que medimos | Resultado |
+|---|---|
+| MCC por lente (contrato / limite / invariante / fundamentação) | 0.33 / 0.71 / 0.48 / **0.78** |
+| Independência das lentes (alfa de Krippendorff) — mas contrato ↔ invariante é redundante (kappa de Cohen) | α 0.162 · **κ 0.717** |
+| Precisão/calibração geral do veredicto (ECE) | 0.667 / 0.241 |
+| Verificação honesta de contaminação: precisão com dados contaminados vs. não contaminados | 0,560 vs. **0,754** (Δ 0,194) |
+| Segurança da citação: uma citação inadequada nunca é aceita cegamente (precisão de rejeição) | **1.000** |
+
+O corpus é pequeno e as principais conclusões são *indicativas* — mas são medições reais, não simuladas, e o relatório é transparente sobre o que mostram e o que não mostram (por exemplo, o ganho de cobertura é 0 neste corpus com predominância do invariante). Consulte o [manual de avaliação](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/) para obter informações sobre o método e um exemplo prático.
 
 ## Serviço HTTP
 

@@ -87,11 +87,23 @@ Oltre al codice, alle chiamate agli strumenti e alle citazioni, Prism valuta la 
 Prism è progettato per essere **misurato**, non solo per fornire asserzioni. `prism eval` esegue i controlli su un corpus etichettato e fornisce un rapporto, basato sui dati di Prism, sulla precisione/richiamo/MCC per ogni lente, sulla matrice di diversità tra le lenti (alfa di Krippendorff + kappa di Cohen a coppie), sul guadagno di copertura submodulare, sull'accuratezza delle decisioni e sulla calibrazione della confidenza (ECE/Brier), il tutto con un intervallo di confidenza onesto.
 
 ```bash
-prism eval --split public --runs 3     # measure against the bundled corpus (needs a verifier)
+prism eval --split all --runs 1        # measure against the bundled corpus (needs a verifier)
 prism eval --offline                    # deterministic mock (CI smoke; NOT a real measurement)
 ```
 
-Consulta il [manuale di valutazione](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/) per la procedura e un esempio pratico.
+**Misurato, non affermato** ([ultima esecuzione →](eval/RESULTS.md) — Ollama locale `mistral-small:24b`,
+111 campioni, 2026-06-14):
+
+| Cosa abbiamo misurato | Risultato |
+|---|---|
+| MCC per lente (contratto / confine / invariante / fondamento) | 0.33 / 0.71 / 0.48 / **0.78** |
+| Indipendenza delle lenti (alfa di Krippendorff) — ma la relazione contratto↔invariante è ridondante (kappa di Cohen) | α 0.162 · **κ 0.717** |
+| Accuratezza/calibrazione complessiva (ECE) | 0.667 / 0.241 |
+| Controllo onesto sulla contaminazione: accuratezza dei dati contaminati rispetto a quelli non contaminati | 0,560 contro **0,754** (Δ 0,194) |
+| Sicurezza delle citazioni: una citazione errata non viene mai accettata acriticamente (richiamo dell'accettazione negativa) | **1.000** |
+
+Il corpus è piccolo e i risultati principali sono *indicativi* — ma si tratta di misurazioni reali, non simulazioni, e il rapporto è trasparente su ciò che mostrano e non mostrano (ad esempio, il guadagno di copertura è 0 in questo corpus dominato dall'invarianza). Consultare il
+[manuale di valutazione](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/) per il metodo e un esempio pratico.
 
 ## Servizio HTTP
 

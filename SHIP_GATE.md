@@ -1,6 +1,6 @@
-# Ship Gate — prism-verify v1.3.0
+# Ship Gate — prism-verify v1.4.0
 
-> Reconciled 2026-06-13 for the v1.3.0 line (originally worked 2026-06-02 for v0.4.0). Tags in
+> Reconciled 2026-06-14 for the v1.4.0 line (originally worked 2026-06-02 for v0.4.0). Tags in
 > play: `[all]` `[pypi]` `[npm]` `[cli]` `[mcp]`.
 > (Also ships an HTTP service — covered under `[all]`/`[cli]` — and the `@mcptoolshop/prism-verify`
 > npm launcher, covered under `[npm]`.)
@@ -56,9 +56,9 @@
 ## E. Identity (soft gate — does not block ship)
 
 - [x] `[all]` Logo in README header — `assets/prism-verify-logo.png` (2026-06-02)
-- [ ] `[all]` Translations (polyglot-mcp, 8 languages) — **Phase 10** (brand treatment; run before the release tag)
-- [ ] `[org]` Landing page (@mcptoolshop/site-theme) — **Phase 10**
-- [ ] `[all]` GitHub repo metadata: description, homepage, topics — **Phase 10** (`gh repo edit`)
+- [x] `[all]` Translations (polyglot-mcp, 8 languages) — `README.{ja,zh,es,fr,hi,it,pt-BR}.md` shipped (Phase 10)
+- [x] `[org]` Landing page (@mcptoolshop/site-theme) — live + astro-starlight handbook wired (Phase 10)
+- [x] `[all]` GitHub repo metadata: description, homepage, topics — set via `gh repo edit` (Phase 10)
 
 ---
 
@@ -69,5 +69,5 @@ Dependabot is org-forbidden, vsix/desktop/container N/A, ops-handbook covered by
 with the docs handbook as the Phase-10 deliverable). The `[npm]` packaging gate is now **audited,
 not skipped**: the repo does ship `@mcptoolshop/prism-verify`, the launcher self-syncs its binary
 pin from `package.json`, and `release.yml` guards both the version match and the absence of a
-hard-coded pin. **Soft gate E:** logo + translations / landing / handbook / topics shipped in the
-Phase-10 brand treatment.
+hard-coded pin. **Soft gate E: fully checked** — logo + translations (8 languages) + live landing +
+astro-starlight handbook + GitHub topics/homepage all shipped in the Phase-10 brand treatment.

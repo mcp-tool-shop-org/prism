@@ -16,7 +16,7 @@
 
 # 
 
-用于代理工作流程的运行时仲裁服务。针对不同模型系列进行验证，去除推理过程，采用多角度验证，并提供可重现的结果——用于评估代码、工具调用、引用以及响应中的**趋炎附势**行为。**[访问落地页和使用手册](https://mcp-tool-shop-org.github.io/prism-verify/)**
+用于代理工作流程的运行时仲裁服务。针对不同模型系列进行，去除推理过程，采用多角度验证，并提供可重现的结果——用于评估代码、工具调用、引用以及响应中的**趋炎附势**行为。**[访问落地页和使用手册 →](https://mcp-tool-shop-org.github.io/prism-verify/)**
 
 ## 安装
 
@@ -76,22 +76,32 @@ Prism 在 API 协议层面强制执行四个架构锁定：
 
 ### 您可以自行提供验证器
 
-“真实性”验证模块可以针对您**托管的**模型运行，而不是使用托管 API——通过 `PRISM_LOCAL_VERIFIER_ENDPOINT` 进行选择，针对不同模型系列进行验证，并允许在您的托管验证器出现故障时继续运行。最常见的检查操作无需任何费用，并且您的证据将保留在本地。一个可选的数据收集模块 (`PRISM_HARVEST_PATH`) 会记录 `(声明、证据、结论)` 三元组，以便您可以训练模型。请参阅[使用手册](https://mcp-tool-shop-org.github.io/prism-verify/handbook/local-verifier/)。
+“真实性”角度可以针对您托管的模型运行，而不是使用托管的 API——通过 `PRISM_LOCAL_VERIFIER_ENDPOINT` 进行选择，针对不同模型系列进行，并对您的托管验证器采用容错机制。最常见的检查不产生任何费用，并且您的证据将保留在本地。一个可选的数据收集模块 (`PRISM_HARVEST_PATH`) 会记录 `(声明、证据、结论)` 三元组，以便您可以训练一个模型。请参阅[使用手册](https://mcp-tool-shop-org.github.io/prism-verify/handbook/local-verifier/)。
 
 ### 趋炎附势（响应验证）
 
-除了代码、工具调用和引用之外，Prism 还会评估模型的**响应**是否存在*倒退式*的**趋炎附势**行为——即为了迎合用户而说出他们想听到的内容，而不是说出正确的内容（肯定错误的假设，在受到质疑时放弃正确的答案）。它会运行一个针对不同模型系列进行验证、并经过专门微调的模型作为“趋炎附势”验证模块——通过 `PRISM_SYCOPHANCY_ENDPOINT` 进行选择，**允许在出现故障时*不给出结论***（绝不会默默地认为“不具有趋炎附势行为”）。如果与*正确的*用户达成一致，或者承认有充分证据的反驳，则表明模型是忠实的，而不是趋炎附势的。请参阅[使用手册](https://mcp-tool-shop-org.github.io/prism-verify/handbook/)。
+除了代码、工具调用和引用之外，Prism 还会评估模型的**响应**是否存在*倒退式*的**趋炎附势**行为——即为了迎合用户而牺牲正确性（肯定错误的假设，在受到质疑时放弃正确的答案）。它会运行一个针对不同模型系列进行优化且不包含推理过程的专用模型，作为“趋炎附势”角度——通过 `PRISM_SYCOPHANCY_ENDPOINT` 进行选择，并采用**容错机制，即*弃权***（绝不会默默地认为“不具有趋炎附势行为”）。如果与*正确的*用户达成一致，或者承认有充分证据的反驳，则表明模型是忠实的，而不是趋炎附势的。请参阅[使用手册](https://mcp-tool-shop-org.github.io/prism-verify/handbook/)。
 
 ## 校准和基准测试 (`prism eval`)
 
 Prism 的设计目的是为了能够**进行测量**，而不仅仅是进行断言。`prism eval` 会在一个标记的语料库上运行各个检查模块，并报告——基于 Prism 自身的数据——每个检查模块的精确度/召回率/MCC，各个检查模块之间的多样性矩阵（Krippendorff α + 成对 Cohen κ），子模覆盖增益，判决准确性，以及置信度校准（ECE/Brier），每个指标都附带一个诚实的置信区间。
 
 ```bash
-prism eval --split public --runs 3     # measure against the bundled corpus (needs a verifier)
+prism eval --split all --runs 1        # measure against the bundled corpus (needs a verifier)
 prism eval --offline                    # deterministic mock (CI smoke; NOT a real measurement)
 ```
 
-请参阅[评估手册](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/)，了解该方法和示例。
+**已测量，而非断言**（[最新运行结果 →](eval/RESULTS.md)——本地 Ollama `mistral-small:24b`，111 个样本，2026-06-14）：
+
+| 我们测量的内容 | 结果 |
+|---|---|
+| 每个角度的 MCC（契约 / 跨边界 / 不变性 / 真实性） | 0.33 / 0.71 / 0.48 / **0.78** |
+| 角度独立性（Krippendorff α），但契约↔不变性是冗余的（Cohen κ） | α 0.162 · **κ 0.717** |
+| 总体结论准确度/校准度（ECE） | 0.667 / 0.241 |
+| 诚实性污染检查：已污染与未污染的准确率 | 0.560 与 **0.754**（Δ 0.194） |
+| 引用安全性：不良引用绝不会被盲目接受（召回率） | **1.000** |
+
+语料库较小，主要发现具有*指示性*——但它们是真实的测量结果，而不是模拟的，并且报告坦诚地说明了其显示和未显示的内容（例如，在此以不变性为主的语料库中，覆盖范围增益为 0）。请参阅[评估手册](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/)，了解该方法和示例。
 
 ## HTTP 服务
 

@@ -16,7 +16,7 @@
 
 # 
 
-Servicio de verificación en tiempo de ejecución para flujos de trabajo de agentes. Verificación con múltiples niveles, sin razonamiento y adaptada a cada familia, con registros que se pueden reproducir: para código, llamadas a herramientas, citas y la **adulación** en las respuestas. **[Página de inicio y manual →](https://mcp-tool-shop-org.github.io/prism-verify/)**
+Servicio de evaluación en tiempo de ejecución para flujos de trabajo de agentes. Verificación multifacética, sin razonamiento y con diferentes familias, con registros reproducibles: para código, llamadas a herramientas, citas y la **adulación** en las respuestas. **[Página de inicio y manual →](https://mcp-tool-shop-org.github.io/prism-verify/)**
 
 ## Instalar
 
@@ -70,31 +70,41 @@ Prism aplica cuatro bloqueos arquitectónicos en el contrato de la API:
 3. **Múltiples lentes:** se ejecutan al menos 3 lentes independientes en paralelo.
 4. **Con conocimiento de la submodularidad:** se rechaza si los lentes están demasiado de acuerdo (señal colapsada).
 
-Para los artefactos de **cita**, se aplica una capa de verificación antes del análisis de la veracidad del modelo lingüístico: cada etapa determinista rechaza lo que puede *demostrar*, y, en caso contrario, se abstiene.
+Para los artefactos de **cita**, se aplica una capa preliminar antes de la verificación de la "fundamentación" del LLM; cada etapa determinista rechaza aquello que puede *demostrar*, y en caso contrario, se abstiene:
 
-- **Capa de existencia:** recuperación en tiempo real de arXiv/Crossref; se descarta un identificador fabricado, sin analizarlo.
-- **Capa numérica/de unidades:** se detecta aritméticamente una sustitución porcentual, un error en la escala de unidades (42 mili- frente a micro-arcosegundos) o una falsedad en la dirección de la comparación (5,0 < 5,8 ≠ "superado").
-- **Análisis de veracidad:** verificación del modelo lingüístico, sin razonamiento y adaptada a cada familia, con respecto al resumen recuperado.
-- **Capa ortogonal NLI** *(opcional, `PRISM_NLI_FLOOR`)*: un codificador NLI (inferencia del lenguaje natural) rechaza una respuesta "apoyada" que el modelo lingüístico proporciona, pero que un modelo diferente no corrobora.
+- **Capa de existencia:** recuperación en vivo de arXiv/Crossref; un identificador fabricado se descarta, sin analizarlo.
+- **Capa numérica/de unidades:** se detecta aritméticamente un cambio porcentual, un error en la escala de unidades (42 mili- frente a micro-segundos de arco) o una falsedad en la dirección de la comparación (5.0 < 5.8 ≠ "superado").
+- **Verificación de la fundamentación:** verificación del LLM, con diferentes familias y sin razonamiento, contra el resumen recuperado.
+- **Capa NLI ortogonal** *(opcional, `PRISM_NLI_FLOOR`)*: un codificador NLI (reconocimiento de implicaciones naturales) cruza la información con un modelo diferente para vetar una respuesta "apoyada" que haya dado el LLM, pero que un modelo mecánicamente diferente no corrobore.
 
 ### Utilice su propio verificador
 
-El análisis de veracidad se puede ejecutar con un modelo **que usted aloje** en lugar de una API alojada; para ello, active la opción mediante `PRISM_LOCAL_VERIFIER_ENDPOINT`. Este proceso está adaptado a cada familia y permite que el sistema falle de forma segura, utilizando sus verificadores alojados. La verificación más frecuente no tiene costo por llamada y su evidencia se mantiene local. Un receptor opcional (`PRISM_HARVEST_PATH`) registra las tripletas `(afirmación, evidencia, veredicto)` para que pueda entrenar un modelo. Consulte el [manual](https://mcp-tool-shop-org.github.io/prism-verify/handbook/local-verifier/).
+La verificación de la fundamentación puede ejecutarse contra un modelo **que usted aloje** en lugar de una API alojada; para ello, active la opción a través de `PRISM_LOCAL_VERIFIER_ENDPOINT`, que utiliza diferentes familias y permite fallar de forma segura hacia sus verificadores alojados. La comprobación más frecuente no tiene costo por llamada y su evidencia se mantiene local. Un receptor de captura opcional (`PRISM_HARVEST_PATH`) registra las tripletas `(afirmación, evidencia, veredicto)` para que pueda entrenar uno. Consulte el [manual](https://mcp-tool-shop-org.github.io/prism-verify/handbook/local-verifier/).
 
-### Adulación (verificación de respuestas)
+### Adulación (verificación de la respuesta)
 
-Además del código, las llamadas a herramientas y las citas, Prism evalúa la **RESPUESTA** de un modelo para detectar una **adulación** *regresiva*: decir al usuario lo que quiere oír en lugar de lo que es correcto (afirmar una premisa falsa, abandonar una respuesta correcta ante una simple objeción). Para ello, utiliza un especialista afinado, sin razonamiento y adaptado a cada familia, como el análisis de "adulación"; para activarlo, utilice `PRISM_SYCOPHANCY_ENDPOINT` y configure el sistema para que **falle de forma segura absteniéndose** (nunca con un silencio que indique "no es adulador"). Estar de acuerdo con un usuario *correcto* o ceder ante una refutación bien fundamentada es ser fiel, no adulador. Consulte el [manual](https://mcp-tool-shop-org.github.io/prism-verify/handbook/).
+Más allá del código, las llamadas a herramientas y las citas, Prism evalúa una **RESPUESTA** del modelo para detectar una **adulación** *regresiva*: decirle al usuario lo que quiere oír en lugar de lo que es correcto (afirmar una premisa falsa, abandonar una respuesta correcta ante una simple objeción). Ejecuta un especialista afinado con diferentes familias y sin razonamiento como la "lente" de adulación; para ello, active la opción a través de `PRISM_SYCOPHANCY_ENDPOINT`, que permite fallar de forma segura **absteniéndose** (nunca con un silencio que indique "no es adulador"). El acuerdo con un usuario *correcto* o la concesión ante una refutación bien fundamentada son señales de honestidad, no de adulación. Consulte el [manual](https://mcp-tool-shop-org.github.io/prism-verify/handbook/).
 
 ## Calibración y prueba de rendimiento (`prism eval`)
 
 Prism está diseñado para ser **medido**, no solo para hacer afirmaciones. `prism eval` ejecuta los modelos sobre un corpus etiquetado y genera informes —basados en los propios datos de Prism— sobre la precisión/exhaustividad/coeficiente de correlación de Matthews (MCC) por modelo, la matriz de diversidad entre modelos (alfa de Krippendorff + kappa de Cohen por pares), la ganancia de cobertura submodular, la precisión de la decisión y la calibración de la confianza (ECE/Brier), todo ello con un intervalo de confianza honesto.
 
 ```bash
-prism eval --split public --runs 3     # measure against the bundled corpus (needs a verifier)
+prism eval --split all --runs 1        # measure against the bundled corpus (needs a verifier)
 prism eval --offline                    # deterministic mock (CI smoke; NOT a real measurement)
 ```
 
-Consulte el [manual de evaluación](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/) para conocer el método y un ejemplo práctico.
+**Medido, no afirmado** ([última ejecución →](eval/RESULTS.md): Ollama local `mistral-small:24b`, 111 muestras, 2026-06-14):
+
+| Lo que medimos | Resultado |
+|---|---|
+| MCC por lente (contrato / cruce de límites / invariante / fundamentación) | 0.33 / 0.71 / 0.48 / **0.78** |
+| Independencia de las lentes (alfa de Krippendorff), pero contrato↔invariante es redundante (kappa de Cohen) | α 0.162 · **κ 0.717** |
+| Precisión/calibración general del veredicto (ECE) | 0.667 / 0.241 |
+| Comprobación honesta de la contaminación: precisión con datos contaminados frente a datos no contaminados | 0.560 frente a **0.754** (Δ 0.194) |
+| Seguridad de las citas: una cita incorrecta nunca se acepta ciegamente (recuperación de rechazos) | **1.000** |
+
+El corpus es pequeño y los principales hallazgos son *indicativos*, pero son mediciones reales, no simuladas, y el informe es honesto sobre lo que muestra y lo que no (por ejemplo, la ganancia en cobertura es 0 en este corpus con predominio de invariantes). Consulte el [manual de evaluación](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/) para conocer el método y un ejemplo práctico.
 
 ## Servicio HTTP
 

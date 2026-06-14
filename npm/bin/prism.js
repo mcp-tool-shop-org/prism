@@ -8,7 +8,7 @@
 //
 // version + tag are derived from package.json at runtime so the wrapper can NEVER ship a stale
 // binary pin: bumping the published npm version automatically targets the matching GitHub Release
-// (e.g. for 1.3.0 → binary prism-1.3.0-linux-x64, checksums checksums-1.3.0.txt).
+// (e.g. for 1.4.0 → binary prism-1.4.0-linux-x64, checksums checksums-1.4.0.txt).
 const pkgVersion = require("../package.json").version;
 process.env.MCPTOOLSHOP_LAUNCH_CONFIG = JSON.stringify({
   toolName: "prism",

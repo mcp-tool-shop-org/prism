@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-14
+
 ### Added
 - **Wedge #2 sycophancy — the ≥3-lens panel + ≥2-agreement calibrated emission gate.** When ≥3
   disjoint, caller-excluded model families are configured, `_verify_sycophancy` now fans the same
@@ -16,23 +18,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   ACCEPTs; otherwise abstain → ESCALATE; fewer than two genuine votes refuses on availability). The
   flag gates on the aggregated vote signal, never a lens's verbalized confidence (Tian 2508.06225).
   With <3 families it falls back to today's single certified-specialist lens, behaviorally unchanged.
-  Like the citation path, the same-mechanism submodularity / `LENS_COLLAPSE` refusal does not apply —
-  cross-family agreement is the emission *signal*, not a collapse. `k` and the accept rule are
-  conservative defaults; the OOD alpha-fit is deferred (it needs the served panel).
 - **`prism calibrate-sycophancy-panel`** — the offline half of the calibration harness:
   `sweep_agreement_k` scores recorded panel votes per agreement-threshold `k` (false-flag rate /
-  recall / coverage / false-clears) so the director can pin `k` + a target false-flag rate `alpha`
-  before the panel is served.
+  recall / coverage / false-clears) so you can pin `k` + a target false-flag rate `alpha` before the
+  panel is served.
 - **`prism probe-sycophancy`** — a producer-supplying entry for the v2 active probe: re-queries a
-  live producer under a pinned content-free rebuttal (capitulation, a DIR test) and an optional
+  live producer under a pinned content-free rebuttal (a capitulation / DIR test) and an optional
   stance-reversed counterfactual (an INV test), with a cross-family agreement judge; emits JSON, an
   opt-in signed receipt, and `--gate` exit codes (0 not_sycophantic, 10 sycophantic, 30 abstain).
-  The integrated `prism.probes` machinery, now runnable on live traffic.
+- **Validate-on-your-own-data: a real same-family A/B.** `prism eval --family-ab` now runs a
+  same-family CONTROL against the family-different TREATMENT and reports a paired **McNemar accuracy
+  delta + CI** — the measurement that shows whether Lock 1 (family-different routing) actually buys
+  accuracy. The control uses a measurement-only, **default-off** `allow_same_family` router bypass.
+- **Real-bug corpus + `CodeJudgeBench`.** `prism eval` now ingests vendored MIT
+  [QuixBugs](https://github.com/jkoppel/QuixBugs) real-bug pairs (contamination-honest: public
+  samples are flagged so the honest signal is reported separately), and a new pairwise benchmark
+  harness — `prism eval --benchmark codejudgebench` (the `[bench]` extra) — scores prism against
+  [CodeJudgeBench](https://huggingface.co/datasets/mattymchen/codejudgebench) (arXiv:2507.10535).
+- **Observability.** A `request_id` correlation id is threaded HTTP → engine → providers, decisions /
+  circuit-breaker / provider calls emit structured logs, and `GET /healthz` now reports circuit-breaker
+  state per provider.
+- **Eval reproducibility.** `prism eval` reports pin the corpus content-hash, the resolved verifier
+  model, and the temperature, and the coverage-gain tie-break is now deterministic.
+- `CONTRIBUTING.md`.
+
+### Changed
+- **Citations are measured by verdict, not lens-fail.** The citation pipeline escalates an
+  unconfirmable citation rather than emitting a `FAIL`, so eval now scores it by VERDICT (off-accept
+  recall, verdict accuracy) instead of treating it as a pass/fail lens.
+- **Graceful degradation.** The circuit breaker is wired into the sycophancy paths, and the citation
+  oracle cache gained a TTL + a size bound.
+- Maintenance: Node-24 GitHub Action bumps with SHA-pinned publish actions, conservative dependency
+  upper-bounds, receipt-builder dedup, and a single canonical `RHO_MAX_DEFAULT`.
+
+### Fixed
+- **CRITICAL — the npm launcher could ship a stale binary.** `npm/bin/prism.js` was pinned to a
+  v0.4.2 binary while the package was 1.3.0; it now derives its `version`/`tag` from `package.json`
+  at runtime, so the launcher can never download a mismatched binary again.
+- **Eval excluded errored runs from calibration**, biasing the numbers; errored runs are now counted.
+- **`--family-ab` silently measured nothing** — the control arm always returned
+  `VERIFIER_UNAVAILABLE`. Fixed alongside the new paired-delta surface above.
+- Oracle hardening: arXiv returned-id match, a response-body cap, and redirects disabled on retrieval.
+- Harvest-sink secret scrub and a quadratic-`ReDoS` fix.
 
 ### Tests
-- 28 new (the panel emission gate + calibration sweep; the engine panel path + the v1 single-lens
-  fallback + caller-family exclusion + fail-open availability refusal; both CLI commands). Full suite
-  **471 passed / 3 skipped**; ruff + mypy `--strict` clean.
+- Suite grows **472 → 641** (the panel gate + calibration sweep; oracle / auth / NLI / panel-receipt
+  gaps; the family-AB delta, real-bug corpus, and CodeJudgeBench harness). ruff + mypy `--strict` clean.
 
 ## [1.3.0] - 2026-06-08
 

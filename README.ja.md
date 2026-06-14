@@ -87,11 +87,21 @@ Prismは、APIコントラクトにおいて、以下の4つのアーキテク�
 Prismは、単に結果を表明するだけでなく、**測定**できるように設計されています。`prism eval`は、ラベル付けされたコーパスに対して複数のレンズを適用し、Prism自身のデータに基づいて、各レンズの精度/再現率/MCC、レンズ間の多様性マトリックス（Krippendorff α + ペアごとのCohen κ）、サブモジュールカバレッジの改善、判断の正確性、および信頼性キャリブレーション（ECE/Brier）を報告します。それぞれの結果には、信頼できる信頼区間が含まれます。
 
 ```bash
-prism eval --split public --runs 3     # measure against the bundled corpus (needs a verifier)
+prism eval --split all --runs 1        # measure against the bundled corpus (needs a verifier)
 prism eval --offline                    # deterministic mock (CI smoke; NOT a real measurement)
 ```
 
-方法と具体的な例については、[評価ハンドブック](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/)をご覧ください。
+**測定値であり、断定ではない**（最新の実行結果 → eval/RESULTS.md — ローカルのOllama `mistral-small:24b`、111サンプル、2026年6月14日）：
+
+| 測定した内容 | 結果 |
+|---|---|
+| レンズごとのMCC（契約 / 境界越え / 不変性 / 根拠） | 0.33 / 0.71 / 0.48 / **0.78** |
+| レンズ間の独立性（クリッペンドルフのα）—ただし、契約↔不変性は冗長である（コーエンのκ） | α 0.162 · **κ 0.717** |
+| 全体的な判断の正確性／キャリブレーション（ECE） | 0.667 / 0.241 |
+| 正直な汚染チェック：汚染されたデータとそうでないデータの正確性 | 0.560 対 **0.754**（差 0.194） |
+| 引用の安全性：質の悪い引用は無条件に受け入れられない（拒否率） | **1.000** |
+
+コーパスが小さく、主な結果は*傾向を示すもの*である—しかし、これらは実際の測定値であり、単なる模擬的なものではない。また、レポートでは、何を示し、何を示さないかについて率直に説明している（例：この不変性が支配的なコーパスにおけるカバレッジの向上は0）。方法と具体的な例については、[評価ハンドブック](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/)を参照してください。
 
 ## HTTPサービス
 

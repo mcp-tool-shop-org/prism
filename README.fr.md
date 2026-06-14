@@ -87,11 +87,21 @@ Au-delà du code, des appels aux outils et des citations, Prism évalue la **RÉ
 Prism est conçu pour être **mesuré**, et non pas seulement pour faire des affirmations. `prism eval` exécute les analyses sur un corpus étiqueté et génère un rapport : sur les propres données de Prism, il indique la précision/le rappel/le MCC par analyse, la matrice de diversité inter-analyses (alpha de Krippendorff + kappa de Cohen par paires), le gain de couverture sous-modulaire, la précision de la décision et l’étalonnage de la confiance (ECE/Brier), le tout avec un intervalle de confiance honnête.
 
 ```bash
-prism eval --split public --runs 3     # measure against the bundled corpus (needs a verifier)
+prism eval --split all --runs 1        # measure against the bundled corpus (needs a verifier)
 prism eval --offline                    # deterministic mock (CI smoke; NOT a real measurement)
 ```
 
-Consultez le [manuel d’évaluation](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/) pour connaître la méthode et un exemple concret.
+**Mesuré, pas affirmé** ([dernière exécution →](eval/RESULTS.md) — Ollama local `mistral-small:24b`, 111 échantillons, 2026-06-14) :
+
+| Ce que nous avons mesuré | Résultat |
+|---|---|
+| MCC par lentille (contrat / limite de domaine / invariant / ancrage) | 0.33 / 0.71 / 0.48 / **0.78** |
+| Indépendance des lentilles (alpha de Krippendorff) — mais le contrat ↔ l'invariant est redondant (kappa de Cohen) | α 0.162 · **κ 0.717** |
+| Précision/calibration globale (ECE) | 0.667 / 0.241 |
+| Vérification honnête de la contamination : précision des données contaminées par rapport aux données non contaminées | 0,560 contre **0,754** (Δ 0,194) |
+| Sécurité des citations : une mauvaise citation n'est jamais acceptée aveuglément (rappel de l'acceptation négative) | **1.000** |
+
+Le corpus est petit et les principaux résultats sont *indicatifs* — mais ce sont des mesures réelles, pas simulées, et le rapport est honnête quant à ce qu'il montre et ne montre pas (par exemple, le gain de couverture est de 0 sur ce corpus où l'invariant est dominant). Voir le [manuel d'évaluation](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/) pour la méthode et un exemple détaillé.
 
 ## Service HTTP
 

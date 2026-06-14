@@ -107,12 +107,26 @@ matrix (Krippendorff α + pairwise Cohen κ), submodular coverage-gain, verdict 
 confidence calibration (ECE/Brier), each with an honest confidence interval.
 
 ```bash
-prism eval --split public --runs 3     # measure against the bundled corpus (needs a verifier)
+prism eval --split all --runs 1        # measure against the bundled corpus (needs a verifier)
 prism eval --offline                    # deterministic mock (CI smoke; NOT a real measurement)
 ```
 
-See the [evaluation handbook](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/)
-for the method and a worked example.
+**Measured, not asserted** ([latest run →](eval/RESULTS.md) — local Ollama `mistral-small:24b`,
+111 samples, 2026-06-14):
+
+| What we measured | Result |
+|---|---|
+| Per-lens MCC (contract / cross_boundary / invariant / groundedness) | 0.33 / 0.71 / 0.48 / **0.78** |
+| Lens independence (Krippendorff α) — but contract↔invariant is redundant (Cohen κ) | α 0.162 · **κ 0.717** |
+| Overall verdict accuracy / calibration (ECE) | 0.667 / 0.241 |
+| Honest contamination check: contaminated vs uncontaminated accuracy | 0.560 vs **0.754** (Δ 0.194) |
+| Citation safety: a bad citation is never blindly accepted (off-accept recall) | **1.000** |
+
+The corpus is small and the headline findings are *directional* — but they are real measurements, not
+mock, and the report is candid about what they do and don't show (e.g. coverage gain is 0 on this
+invariant-dominant corpus). See the
+[evaluation handbook](https://mcp-tool-shop-org.github.io/prism-verify/handbook/evaluation/) for the
+method and a worked example.
 
 ## HTTP service
 
