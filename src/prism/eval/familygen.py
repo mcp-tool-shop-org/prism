@@ -252,6 +252,19 @@ def _is_unrunnable(outcome: ExecOutcome) -> bool:
     return outcome.status == "error" and any(m in outcome.detail for m in _UNRUNNABLE_MARKERS)
 
 
+async def _safe_generate(gen: GenerateFn, model_id: str, system: str, user: str) -> str:
+    """Generate, tolerating a TRANSIENT provider error (read-timeout / connection) by returning ''.
+
+    A long real-model corpus build makes thousands of calls; one transient ``httpx`` blip must not
+    crash the whole batch (and lose every artifact already generated). The caller treats '' as an
+    empty generation and skips that one artifact, so the run is resilient by construction.
+    """
+    try:
+        return await gen(model_id, system, user)
+    except httpx.HTTPError:
+        return ""
+
+
 async def build_family_corpus(
     out_dir: Path,
     families: list[FamilySpec],
@@ -335,7 +348,7 @@ async def build_family_corpus(
         counter = per_family.setdefault(fam.family, Counter())
         slug = _slug(fam.family)
         for problem in problems:
-            raw = await gen(fam.model_id, GEN_SYSTEM, _gen_prompt(problem))
+            raw = await _safe_generate(gen, fam.model_id, GEN_SYSTEM, _gen_prompt(problem))
             code = _extract_code(raw)
             if not code.strip():
                 counter["empty"] += 1
@@ -427,7 +440,9 @@ async def build_family_corpus(
             if not sig0:  # None or empty -> no usable same-bug key
                 continue
             for family in ordered:
-                raw = await gen(model_of[family], RESTYLE_SYSTEM, _restyle_prompt(canonical_bug))
+                raw = await _safe_generate(
+                    gen, model_of[family], RESTYLE_SYSTEM, _restyle_prompt(canonical_bug)
+                )
                 restyled = _extract_code(raw)
                 if not restyled.strip():
                     continue

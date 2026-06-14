@@ -158,6 +158,23 @@ async def test_unrunnable_artifact_is_skipped_not_labeled_buggy(tmp_path: Path) 
     assert counts["f"].get("natural_bug", 0) == 0  # NOT mislabeled buggy
 
 
+async def test_transient_gen_error_does_not_crash_the_build(tmp_path: Path) -> None:
+    # a long real-model run makes thousands of calls; one transient httpx blip must not crash the
+    # whole batch (and lose every artifact already generated) — it skips that one artifact
+    import httpx
+
+    async def gen(model_id: str, system: str, user: str) -> str:
+        raise httpx.ReadTimeout("transient provider blip")
+
+    manifest = await build_family_corpus(
+        tmp_path, [FamilySpec("f", "m")], problems=[_ADD], generate_fn=gen, deconfound=False
+    )
+    assert manifest["n_samples"] == 0
+    counts = manifest["counts_by_family"]
+    assert isinstance(counts, dict)
+    assert counts["f"]["empty"] == 1  # transient error -> skipped, not a crash
+
+
 async def test_perplexity_covariate_is_recorded(tmp_path: Path) -> None:
     gen = _make_gen({("good-model", "add"): _CORRECT_ADD})
     manifest = await build_family_corpus(
