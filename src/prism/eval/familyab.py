@@ -39,10 +39,15 @@ running each family's verifier over the family-provenanced corpus — is the Wav
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
+from prism.eval.corpus import Sample
 from prism.eval.metrics import cluster_bootstrap_ci, quality_metrics
+
+# (verifier_family, sample) -> the verifier's verdict for that artifact. The caller supplies the
+# judge (a real bypass-routed engine for same-family judging, or a mock for offline tests).
+JudgeFn = Callable[[str, Sample], Awaitable[str]]
 
 _REFUTE = {"refuse", "revise"}  # the verifier flagged a defect
 _ABSTAIN = {"escalate"}  # sent to a human — safe; neither a catch nor a false-accept
@@ -227,3 +232,35 @@ def compute_self_preference(
         n_problems=len(clusters),
         note=note,
     )
+
+
+async def run_round_robin(
+    samples: Sequence[Sample],
+    provenance: dict[str, str],
+    problem_of: dict[str, str],
+    verifier_families: Sequence[str],
+    judge: JudgeFn,
+) -> list[JudgeRecord]:
+    """Run each verifier family over every artifact; emit one ``JudgeRecord`` per (family, sample).
+
+    ``provenance`` (sample_id -> producing family) and ``problem_of`` (sample_id -> problem id) come
+    from the familygen manifest. ``judge(verifier_family, sample)`` returns that verifier's verdict;
+    same-family judging is REQUIRED here, so a real judge must route through the measurement-only
+    ``allow_same_family`` engine (built in cli/main.py). Pure orchestration — deterministic given a
+    deterministic ``judge`` — so ``compute_self_preference(await run_round_robin(...))`` is the run.
+    """
+    records: list[JudgeRecord] = []
+    for verifier in verifier_families:
+        for sample in samples:
+            verdict = await judge(verifier, sample)
+            records.append(
+                JudgeRecord(
+                    verifier_family=verifier,
+                    producer_family=provenance[sample.id],
+                    problem_id=problem_of[sample.id],
+                    sample_id=sample.id,
+                    ground_truth_buggy=sample.positive,
+                    verdict=verdict,
+                )
+            )
+    return records

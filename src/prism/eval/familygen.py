@@ -244,6 +244,7 @@ async def build_family_corpus(
 
     samples: list[Sample] = []
     provenance: dict[str, str] = {}
+    problem_of: dict[str, str] = {}  # sample_id -> problem id (the A/B harness's bootstrap cluster)
     overlap_by_sample: dict[str, int] = {}
     per_family: dict[str, Counter[str]] = {}
 
@@ -275,6 +276,7 @@ async def build_family_corpus(
                     )
                 )
                 provenance[sid] = fam.family
+                problem_of[sid] = problem.id
                 overlap_by_sample[sid] = overlap
                 counter["clean"] += 1
 
@@ -296,6 +298,7 @@ async def build_family_corpus(
                         )
                     )
                     provenance[msid] = fam.family
+                    problem_of[msid] = problem.id
                     overlap_by_sample[msid] = contamination_overlap(mutant.code, refs)
                     counter["mutant"] += 1
                     kept += 1
@@ -308,6 +311,7 @@ async def build_family_corpus(
                     )
                 )
                 provenance[sid] = fam.family
+                problem_of[sid] = problem.id
                 overlap_by_sample[sid] = overlap
                 counter["natural_bug"] += 1
 
@@ -334,6 +338,9 @@ async def build_family_corpus(
         # PROVENANCE SIDECAR: sample_id -> producing family. The A/B harness groups by this to form
         # the within-judge self-vs-cross contrast; it lives here, NOT in the frozen Sample schema.
         "provenance": provenance,
+        # sample_id -> problem id: the cluster the family-AB bootstrap resamples (items nested by
+        # problem). Robust source for clustering (never parse it back out of the hyphenated id).
+        "problem_of": problem_of,
         "contamination": {
             "refs_provided": len(refs),
             "max_run_drop_threshold": contamination_max_run,

@@ -124,6 +124,24 @@ def test_contamination_overlap_basic() -> None:
     assert high >= 5
 
 
+async def test_problem_of_maps_every_sample(tmp_path: Path) -> None:
+    gen = _make_gen({("good-model", "add"): _CORRECT_ADD})
+    manifest = await build_family_corpus(
+        tmp_path,
+        [FamilySpec("good", "good-model")],
+        problems=[_ADD],
+        generate_fn=gen,
+        mutants_per_clean=1,
+    )
+    problem_of = manifest["problem_of"]
+    provenance = manifest["provenance"]
+    assert isinstance(problem_of, dict)
+    assert isinstance(provenance, dict)
+    assert problem_of  # non-empty
+    assert all(p == "add" for p in problem_of.values())  # all from the one seed problem
+    assert set(problem_of) == set(provenance)  # every provenanced sample is clustered
+
+
 def test_seed_problems_are_well_formed() -> None:
     from prism.eval._familygen_problems import FRESH_PROBLEMS
 

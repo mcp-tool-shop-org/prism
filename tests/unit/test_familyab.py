@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from prism.eval.familyab import JudgeRecord, collapse_verdict, compute_self_preference
+from prism.eval.corpus import Sample
+from prism.eval.familyab import (
+    JudgeRecord,
+    collapse_verdict,
+    compute_self_preference,
+    run_round_robin,
+)
 
 
 def test_collapse_verdict() -> None:
@@ -102,3 +108,52 @@ def test_only_own_family_is_uninterpretable() -> None:
     sp = compute_self_preference(recs).per_family[0]
     assert sp.n_other_buggy == 0
     assert sp.interpretable is False
+
+
+def _sample(sid: str, positive: bool) -> Sample:
+    return Sample(
+        id=sid,
+        artifact_type="code",
+        content="x",
+        intent="i",
+        positive=positive,
+        target_lens="invariant",
+        bug_class="bug" if positive else "clean",
+        expected_verdict="refuse" if positive else "accept",
+        split="fresh",
+    )
+
+
+async def test_round_robin_runner_to_estimate() -> None:
+    samples: list[Sample] = []
+    provenance: dict[str, str] = {}
+    problem_of: dict[str, str] = {}
+    for producer in ("A", "B"):
+        for problem in ("p0", "p1"):
+            for kind, positive in (("bug", True), ("clean", False)):
+                sid = f"{producer}-{problem}-{kind}"
+                samples.append(_sample(sid, positive))
+                provenance[sid] = producer
+                problem_of[sid] = problem
+
+    async def judge(verifier: str, sample: Sample) -> str:
+        if not sample.positive:
+            return "accept"
+        producer = provenance[sample.id]
+        if verifier == "A":
+            return "accept" if producer == "A" else "refuse"  # A false-accepts its own bugs
+        return "refuse"  # B refutes every bug regardless of producer
+
+    records = await run_round_robin(samples, provenance, problem_of, ["A", "B"], judge)
+    assert len(records) == 2 * len(samples)  # each verifier judges every artifact
+    probe = next(r for r in records if r.verifier_family == "A" and r.sample_id == "A-p0-bug")
+    assert probe.producer_family == "A"
+    assert probe.problem_id == "p0"
+    assert probe.ground_truth_buggy is True
+
+    result = compute_self_preference(records)
+    a = next(sp for sp in result.per_family if sp.verifier_family == "A")
+    b = next(sp for sp in result.per_family if sp.verifier_family == "B")
+    assert a.self_preference == 1.0
+    assert b.self_preference == 0.0
+    assert result.aggregate_self_preference == 0.5
