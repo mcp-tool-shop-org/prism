@@ -38,7 +38,11 @@ from typing import Any
 import httpx
 
 from prism.core.types import ArtifactType
-from prism.eval.container_sandbox import docker_available, label_candidate
+from prism.eval.container_sandbox import (
+    docker_available,
+    label_candidate,
+    signature_candidate,
+)
 from prism.eval.corpus import (
     CONTENT_HASH_SCHEMA,
     Sample,
@@ -58,6 +62,22 @@ GEN_SYSTEM = (
     "You are an expert Python programmer. Implement the requested function exactly as specified. "
     "Return ONLY the function source code — no markdown fences, no explanation, no tests."
 )
+
+# The deconfounder restyle: a family re-expresses a FIXED buggy solution in its own style WITHOUT
+# changing behavior, so the bug (its failing-test signature) is held constant across families and
+# only the style varies — isolating self-preference from capability-driven difficulty (Tsui 2025).
+RESTYLE_SYSTEM = (
+    "You are an expert Python programmer. Rewrite the given function in your own idiomatic style "
+    "WITHOUT changing its behavior in any way — preserve every output exactly, INCLUDING any bugs. "
+    "Return ONLY the function source code — no markdown fences, no explanation, no tests."
+)
+
+
+def _restyle_prompt(code: str) -> str:
+    return (
+        "Rewrite the following function in your own style, preserving its EXACT behavior on every "
+        "input — including any incorrect outputs / bugs (do NOT fix anything):\n\n" + code
+    )
 
 
 @dataclass(frozen=True)
@@ -247,6 +267,7 @@ async def build_family_corpus(
     contamination_refs: list[str] | None = None,
     contamination_max_run: int = 0,
     perplexity_fn: Callable[[str], float | None] | None = None,
+    deconfound: bool = True,
 ) -> dict[str, object]:
     """Generate, execution-label, and materialize a family-provenanced code corpus + its manifest.
 
@@ -286,12 +307,23 @@ async def build_family_corpus(
             label_candidate, code, problem, timeout_s=timeout_s, container_check=_container_check
         )
 
+    async def _signature(code: str, problem: ProblemSpec) -> frozenset[str] | None:
+        return await asyncio.to_thread(
+            signature_candidate,
+            code,
+            problem,
+            timeout_s=timeout_s,
+            container_check=_container_check,
+        )
+
+    model_of = {f.family: f.model_id for f in families}
     samples: list[Sample] = []
     provenance: dict[str, str] = {}
     problem_of: dict[str, str] = {}  # sample_id -> problem id (the A/B harness's bootstrap cluster)
     overlap_by_sample: dict[str, int] = {}
     perplexity_by_sample: dict[str, float] = {}
     per_family: dict[str, Counter[str]] = {}
+    clean_gens: dict[str, dict[str, str]] = {}  # {problem_id: {family: clean code}} (deconfounder)
 
     def _record_perplexity(sid: str, code: str) -> None:
         if perplexity_fn is not None:
@@ -332,6 +364,7 @@ async def build_family_corpus(
                 overlap_by_sample[sid] = overlap
                 _record_perplexity(sid, code)
                 counter["clean"] += 1
+                clean_gens.setdefault(problem.id, {})[fam.family] = code  # for the deconfounder
 
                 kept = 0
                 for mutant in generate_mutants(code, limit=mutants_per_clean * 3):
@@ -368,6 +401,52 @@ async def build_family_corpus(
                 overlap_by_sample[sid] = overlap
                 _record_perplexity(sid, code)
                 counter["natural_bug"] += 1
+
+    # --- Deconfounder stratum (faithful shared-bug restyle) ------------------------------------
+    # For each problem >=2 families solved cleanly, hold ONE bug constant (identical failing-test
+    # signature) across families and vary only the family STYLE. This isolates self-preference from
+    # capability-driven bug difficulty (the critic's must-fix; Tsui 2025) — the estimator restricts
+    # the contrast to bug_class=="deconfound" for a difficulty-matched read.
+    if deconfound:
+        problems_by_id = {p.id: p for p in problems}
+        for problem_id, fam_clean in clean_gens.items():
+            if len(fam_clean) < 2:
+                continue  # need >=2 clean-producing families to vary style at a fixed bug
+            problem = problems_by_id[problem_id]
+            ordered = [f.family for f in families if f.family in fam_clean]
+            # the FIXED canonical bug: first execution-verified buggy mutant of the canonical clean
+            canonical_bug: str | None = None
+            for mutant in generate_mutants(fam_clean[ordered[0]], limit=mutants_per_clean * 3):
+                m_out = await _label(mutant.code, problem)
+                if not _is_unrunnable(m_out) and m_out.is_buggy:
+                    canonical_bug = mutant.code
+                    break
+            if canonical_bug is None:
+                continue
+            sig0 = await _signature(canonical_bug, problem)
+            if not sig0:  # None or empty -> no usable same-bug key
+                continue
+            for family in ordered:
+                raw = await gen(model_of[family], RESTYLE_SYSTEM, _restyle_prompt(canonical_bug))
+                restyled = _extract_code(raw)
+                if not restyled.strip():
+                    continue
+                r_out = await _label(restyled, problem)
+                if _is_unrunnable(r_out) or not r_out.is_buggy:
+                    continue
+                if await _signature(restyled, problem) != sig0:
+                    continue  # not the IDENTICAL failing-test set — a different bug; drop
+                dsid = f"deconf-{_slug(problem_id)}-{_slug(family)}"
+                samples.append(
+                    _make_sample(
+                        dsid, restyled, problem, positive=True, bug_class="deconfound",
+                        verdict="revise", split=split,
+                    )
+                )
+                provenance[dsid] = family
+                problem_of[dsid] = problem_id
+                _record_perplexity(dsid, restyled)
+                per_family[family]["deconfound"] += 1
 
     integrity = check_corpus_integrity(samples)
     if integrity:
