@@ -49,3 +49,24 @@ def test_infinite_loop_times_out() -> None:
     assert out.passed is False
     assert out.status == TIMEOUT
     assert out.is_buggy is True
+
+
+def test_sys_exit_patch_cannot_force_clean_label() -> None:
+    # Labeling integrity: a wrong candidate that no-ops sys.exit must NOT be mislabeled clean.
+    code = (
+        "import sys\n"
+        "sys.exit = lambda *a, **k: None\n"
+        "def add(a, b):\n"
+        "    return a - b\n"  # wrong on purpose
+    )
+    out = run_candidate(code, _ADD_TEST, "add")
+    assert out.passed is False
+    assert out.status == FAIL
+
+
+def test_os_exit_attempt_is_buggy_not_clean() -> None:
+    # A candidate that tries to os._exit(0) before the test can fail is buggy, never clean.
+    code = "def add(a, b):\n    import os\n    os._exit(0)\n    return a - b\n"
+    out = run_candidate(code, _ADD_TEST, "add")
+    assert out.passed is False
+    assert out.status == ERROR

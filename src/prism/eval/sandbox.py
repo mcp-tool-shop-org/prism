@@ -36,8 +36,8 @@ FAIL = "fail"  # a test assertion was violated (wrong behavior)
 TIMEOUT = "timeout"  # exceeded the wall-clock budget (e.g. an infinite loop)
 ERROR = "error"  # raised at import/exec/runtime, or the entry point was missing
 
-# Child-process exit codes (see ``_RUNNER_SRC``): 0 PASS, 1 FAIL (AssertionError). 2 runtime crash,
-# 3 candidate failed to compile/exec, 4 entry point absent — all map to ERROR.
+# Child-process exit codes (see ``_RUNNER_SRC``): 0 PASS, 1 FAIL (AssertionError). 2 (any other
+# raise: crash, compile, SystemExit, guarded-call) and 4 (entry point absent) both map to ERROR.
 _EXIT_PASS = 0
 _EXIT_FAIL = 1
 
@@ -61,22 +61,28 @@ class ExecOutcome:
 # code can never alter the runner's own logic. It applies the reliability guard BEFORE executing.
 _RUNNER_SRC = r'''
 import json
+import os
 import pathlib
-import sys
+
+# Capture the real process-exit primitive BEFORE any candidate code can patch sys.exit / os._exit.
+# The runner's authoritative exit goes through THIS reference, so a candidate that no-ops sys.exit
+# (to make the failure path fall through to a 0) cannot force a false-clean label.
+_real_exit = os._exit
 
 
 def reliability_guard():
-    # Neuter the most destructive entry points before any candidate code runs. Not a sandbox; a
-    # defense-in-depth guard for trusted-local output (HumanEval/EvalPlus pattern). Imports the
-    # candidate may legitimately need (math, itertools, ...) are left intact.
+    # Neuter the most destructive / process-relabeling entry points before any candidate runs. Not
+    # a sandbox; a defense-in-depth guard for trusted-local output (HumanEval/EvalPlus pattern).
+    # Imports the candidate may legitimately need (math, itertools, ...) are left intact.
     import builtins
-    import os
     import shutil
 
     for name in (
         "system", "popen", "remove", "removedirs", "rmdir", "unlink", "kill", "killpg",
         "fork", "forkpty", "abort", "chmod", "chown", "chroot", "lchmod", "lchown",
-        "rename", "renames", "truncate", "replace",
+        "rename", "renames", "truncate", "replace", "startfile", "_exit",
+        "execv", "execve", "execvp", "execvpe", "execl", "execle", "execlp", "execlpe",
+        "spawnl", "spawnle", "spawnv", "spawnve", "spawnvp", "spawnvpe",
     ):
         if hasattr(os, name):
             setattr(os, name, None)
@@ -85,9 +91,9 @@ def reliability_guard():
             setattr(shutil, name, None)
     try:
         import subprocess
-        subprocess.Popen = None
-        subprocess.run = None
-        subprocess.call = None
+        for name in ("Popen", "run", "call", "check_call", "check_output"):
+            if hasattr(subprocess, name):
+                setattr(subprocess, name, None)
     except Exception:
         pass
     builtins.exit = None
@@ -97,29 +103,30 @@ def reliability_guard():
 reliability_guard()
 
 _here = pathlib.Path(__file__).resolve().parent
-_code = (_here / "candidate.txt").read_text(encoding="utf-8")
-_test = (_here / "test.txt").read_text(encoding="utf-8")
 _meta = json.loads((_here / "meta.json").read_text(encoding="utf-8"))
 _entry = _meta["entry_point"]
+_code = (_here / "candidate.txt").read_text(encoding="utf-8")
+_test = (_here / "test.txt").read_text(encoding="utf-8")
 
+# Default to ERROR (buggy): any unexpected control flow labels the artifact buggy, NEVER silently
+# clean. rc becomes 0 (PASS) ONLY after check() returns without raising. The final exit uses the
+# captured os._exit so candidate code cannot rewrite the verdict by patching the exit primitives.
+rc = 2
 _ns = {}
 try:
     exec(compile(_code, "<candidate>", "exec"), _ns)
-except BaseException:
-    sys.exit(3)
-
-if _entry not in _ns:
-    sys.exit(4)
-
-try:
-    exec(compile(_test, "<test>", "exec"), _ns)
-    _ns["check"](_ns[_entry])
+    if _entry not in _ns:
+        rc = 4
+    else:
+        exec(compile(_test, "<test>", "exec"), _ns)
+        _ns["check"](_ns[_entry])
+        rc = 0
 except AssertionError:
-    sys.exit(1)
+    rc = 1
 except BaseException:
-    sys.exit(2)
+    rc = 2
 
-sys.exit(0)
+_real_exit(rc)
 '''
 
 
@@ -161,6 +168,6 @@ def run_candidate(
             return ExecOutcome(True, PASS, "all tests passed")
         if rc == _EXIT_FAIL:
             return ExecOutcome(False, FAIL, "a test assertion failed")
-        # rc 2 (runtime crash), 3 (compile/exec error), 4 (missing entry point), or any signal.
+        # rc 2 (raise/crash/compile/SystemExit), 4 (missing entry point), or any signal.
         stderr_tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
         return ExecOutcome(False, ERROR, f"exit {rc}: {stderr_tail[0][:200]}")
