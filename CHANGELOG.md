@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-06-14
+
+### Added
+- **Family-AB harder corpus + `prism eval --round-robin`** — closes the v1.5.0 ceiling-effect null.
+  The v1.5.0 pilot measured self_preference +0.000 (CI [0,0]) because the corpus was so easy that
+  every verifier refuted every bug (false-accept rate ≡ 0), starving the within-judge estimator of
+  variance. v1.6 lands false-accept rates in the (0,1) regime where family self-preference can
+  actually manifest:
+  - **Harder-corpus loaders** (`prism.eval.bigcodebench`, `prism.eval.livecodebench`):
+    contamination-dated LiveCodeBench-functional + hard function-level BigCodeBench problems,
+    execution-labeled (no LLM grader). LCB private tests decode base64→zlib→pickle→json;
+    `contest_date` holdout; per-problem case cap (real LCB bakes multi-MB test payloads).
+  - **Containerized execution-labeler** (`prism.eval.container_sandbox` +
+    `eval/docker/labeler.Dockerfile`): Docker `--network none`, read-only, tmpfs, mem/pids/cpu caps;
+    routes lib-bearing candidates to the container and stdlib-only candidates to the in-process sandbox.
+  - **Faithful shared-bug-restyle deconfounder** (`prism.eval.familygen`): fix one bug, restyle it
+    through each family, keep the problem only when the failing-test **signature** is identical across
+    families — holding bug difficulty constant so the contrast isolates self-preference from capability.
+  - **Difficulty-stratified problem selection** (`prism.eval.problem_select`) so the deconfound
+    stratum actually populates on a mixed-difficulty corpus.
+  - **Estimator hardening** (`prism.eval.metrics`, `prism.eval.familyab`): min-cluster gate (≥20),
+    TOST equivalence testing (Lakens 2018), Benjamini-Yekutieli FDR (arbitrary dependence), and a
+    pre-registered decision rule (`superiority` / `equivalence` / `inconclusive` / `underpowered`).
+  - **`prism eval --round-robin`** — the reproducibility wrapper: `--familyab-corpus <dir>` →
+    per-family round-robin → `compute_self_preference` (`--sesoi`, `--min-problems`) → a markdown
+    report + a signed Ed25519 receipt. The measurement-only `allow_same_family` bypass stays confined
+    behind the Knight-Capital source-scan guard.
+  - **Pre-registered run** published to `eval/RESULTS.md` (locked before data): 4 local families, 28
+    problem-clusters. The ceiling effect is gone (per-family false-accept 0.03–0.22); granite shows
+    +0.118 self-preference in its own direction, but the panel aggregate is +0.020 (95% CI
+    [−0.014, +0.082]) → **inconclusive** (under-powered at n=28). Method validated on prism's own
+    data; closes by scaling the cluster count on the identical locked pipeline.
+
+### Fixed
+- `prism eval --round-robin` no longer crashes on the final console echo on a legacy cp1252 terminal
+  (the run's result and signed receipt were always written to disk first; only the terminal echo
+  threw on a non-encodable character). The report file keeps full UTF-8.
+
 ## [1.5.0] - 2026-06-14
 
 ### Added
