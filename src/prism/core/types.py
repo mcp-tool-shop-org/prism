@@ -25,6 +25,14 @@ class ModelFamily(StrEnum):
     # not_sycophantic | abstain — wedge #2). Its own family, distinct from any producer it judges,
     # so the family-different lock holds by construction. Opt-in via PRISM_SYCOPHANCY_ENDPOINT.
     LOCAL_SYCOPHANCY = "local-sycophancy"
+    # OpenRouter — a multi-vendor GATEWAY (one OpenAI-compatible endpoint fronting many vendors)
+    # used as ONE cross-family verifier seat. "openrouter" is a TRANSPORT, not a lineage, so the
+    # seat is L1-honest only if it carries a model whose true family is distinct from every prism
+    # caller; the setup-time guard (providers/openrouter.py: validate_openrouter_lineage) refuses a
+    # model whose vendor prefix collides with a native family (anthropic/openai/google/mistral) or
+    # is non-deterministic (openrouter/auto). Opt-in via OPENROUTER_API_KEY +
+    # PRISM_VERIFIER_MODEL_OPENROUTER.
+    OPENROUTER = "openrouter"
 
 
 class ArtifactType(StrEnum):

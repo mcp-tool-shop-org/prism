@@ -79,6 +79,37 @@ def with_local_verifier(
     return out
 
 
+def with_openrouter(
+    base: dict[ModelFamily, list[tuple[ModelFamily, str]]],
+    model_id: str,
+) -> dict[ModelFamily, list[tuple[ModelFamily, str]]]:
+    """A routing map with the OpenRouter seat APPENDED as a cross-family FAILOVER for every caller,
+    plus a caller row for OPENROUTER itself.
+
+    Appended (not PREPENDED like the local Verifier specialist): OpenRouter is a breadth/overflow
+    supply, so it fills in BEHIND a caller's existing cross-family verifiers — selected when those
+    are unconfigured or circuit-open — rather than displacing them. For a deployment whose only
+    configured cross-family provider IS OpenRouter (e.g. a local producer + OpenRouter, no native
+    Anthropic/OpenAI/Google keys), ``select_verifier`` walks past the unserviceable native routes
+    and lands on OPENROUTER, so it becomes a real, serviceable cross-family verifier.
+
+    Injected by ``build_default_engine`` ONLY when the OpenRouter provider is configured, so the
+    static ``DEFAULT_ROUTING_MAP`` — and its shipped contract/tests — is byte-identical when it is
+    not. ``model_id`` is the family-distinct model the setup-time lineage guard already validated.
+    """
+    out = {
+        caller: [*verifiers, (ModelFamily.OPENROUTER, model_id)]
+        for caller, verifiers in base.items()
+    }
+    out[ModelFamily.OPENROUTER] = [
+        (ModelFamily.ANTHROPIC, "claude-sonnet-4-6"),
+        (ModelFamily.OPENAI, "gpt-5.4-mini"),
+        (ModelFamily.GOOGLE, "gemini-2.5-pro"),
+        (ModelFamily.LOCAL, "mistral-small:24b"),
+    ]
+    return out
+
+
 def resolve_routing_map(
     base: dict[ModelFamily, list[tuple[ModelFamily, str]]] | None = None,
     env: Mapping[str, str] | None = None,
