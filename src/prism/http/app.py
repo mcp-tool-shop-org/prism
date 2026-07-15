@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from prism import __version__
 from prism.core.engine import VerificationEngine
 from prism.core.observability import reset_request_id, set_request_id
-from prism.core.setup import build_providers_from_env, register_default_lenses
+from prism.core.setup import build_default_engine
 from prism.core.types import (
     Artifact,
     ArtifactType,
@@ -309,8 +309,10 @@ def create_app(
     if store is None:
         store = ReceiptStore()
     if engine is None:
-        register_default_lenses()
-        engine = VerificationEngine(providers=build_providers_from_env(), receipt_store=store)
+        # Share the ONE engine factory with the CLI/MCP: it resolves the F-14 verifier registry
+        # (PRISM_VERIFIER_MODEL_*) and the specialist/gateway injections. Hand-building the engine
+        # here is what silently pinned this surface to DEFAULT_ROUTING_MAP's hardcoded models.
+        engine = build_default_engine(receipt_store=store)
     if authenticator is None:
         authenticator = Authenticator(
             load_key_hashes(),
@@ -367,6 +369,9 @@ def create_app(
         lifespan=lifespan,
     )
     install_problem_handler(app)
+    # Expose the engine for introspection (which routing map this deploy actually resolved) and so
+    # tests can assert the registry reached this surface without driving a verification.
+    app.state.engine = engine
 
     @app.middleware("http")
     async def access_log_middleware(
@@ -559,9 +564,7 @@ def create_app(
         rate_headers = _authn(request)
         row = store.get_receipt(receipt_id)
         if row is None:
-            raise ProblemError(
-                404, "receipt-not-found", "Not Found", f"No receipt {receipt_id!r}."
-            )
+            raise ProblemError(404, "receipt-not-found", "Not Found", f"No receipt {receipt_id!r}.")
         return _json(_replay_payload(row, store), rate_headers)
 
     @app.post("/verify-receipt")

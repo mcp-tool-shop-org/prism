@@ -7,7 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **The F-14 verifier registry was silently ignored by `prism verify` and the HTTP API.**
+  `resolve_routing_map` (the only reader of `PRISM_VERIFIER_MODEL_*`) was reachable *only* through
+  `build_default_engine`, which only the MCP server called. Both other transports hand-built a
+  `VerificationEngine` with a default `FamilyRouter`, so they served `DEFAULT_ROUTING_MAP`'s
+  hardcoded model ids no matter what was configured — a pin **looked applied and was not**, with no
+  warning. Anything shelling `prism verify` per seat therefore ran every seat on the same
+  `mistral-small:24b`: N identical jurors wearing N name tags, silently destroying the cross-family
+  diversity a verifier panel exists for. Both surfaces now resolve their routing map through one
+  shared `setup.resolve_engine_routing_map`, and a parametrized test pins the contract on **all
+  three** transports (there was none before, which is why this shipped).
+  - This also completes the OpenRouter seat below, which was reachable only from MCP: the CLI never
+    registered the provider *and* never injected the route; HTTP registered the provider but never
+    injected the route, leaving it registered-but-unroutable.
+
 ### Added
+- **`prism verify --verifier-model FAMILY=MODEL`** — repeatable, discoverable sugar for
+  `PRISM_VERIFIER_MODEL_<FAMILY>`, taking precedence over it (e.g.
+  `--verifier-model openai=gpt-oss:120b-cloud`). Families whose model is *provider* configuration
+  (`openrouter` / `local-verifier` / `local-sycophancy` — the OpenRouter lineage guard validates the
+  model when the provider is built) are **refused with a pointer to the env var** rather than
+  silently dropped.
+- **`prism verify --provider` is now a repeatable allowlist** over the shared provider factory, and
+  a `click.Choice`: `ollama` (default) · `anthropic` · `openai` · `google` · `openrouter` ·
+  `local-verifier` · `local-sycophancy`. The cross-family cloud seat (and OpenRouter) are reachable
+  from the CLI for the first time, and multiple `--provider` flags give the CLI real failover.
+  - **Free-by-default is now a pinned contract, not a convention.** Only the *named* providers are
+    registered, so an ambient `GOOGLE_API_KEY` can never redirect (or bill) a run scoped to
+    `ollama` — for `caller_family=anthropic` the route order is GOOGLE → OPENAI → LOCAL, so
+    delegating to `build_default_engine()` here would have done exactly that, silently.
+
 - **OpenRouter cross-family verifier seat (F-14)** — a new `OPENROUTER` model family +
   `OpenRouterProvider` (OpenAI-compatible gateway) makes the whole OpenRouter catalog available as a
   cross-family verifier through one key. Opt-in: built only when BOTH `OPENROUTER_API_KEY` and
@@ -21,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     is non-deterministic (`openrouter/auto`) — so the OPENROUTER label can only ever carry a
     genuinely family-distinct model (deepseek/qwen/cohere/nvidia/meta-llama/…), keeping the
     family-different guarantee honest.
+
+### Changed
+- **`--provider anthropic` now honors `PRISM_ANTHROPIC_BASE_URL`** (a deliberate behavior change):
+  it previously hand-built the provider and ignored the override every other surface honored.
+- **`--provider <unknown>` is now a usage error (exit 2)** instead of registering nothing and
+  dead-ending on `VERIFIER_UNAVAILABLE` — `--provider openai` used to read as "openai refused."
+- `build_default_engine(receipt_store=...)` accepts a caller-owned receipt store, letting the HTTP
+  app keep its store lifecycle while sharing the one engine factory.
 
 ## [1.6.0] - 2026-06-14
 

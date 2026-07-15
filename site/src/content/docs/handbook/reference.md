@@ -20,6 +20,21 @@ sidebar:
 
 `--gate` exit codes: `0` accept · `10` revise · `20` refuse · `30` escalate.
 
+### Choosing the verifier
+
+`--provider` is an **allowlist** (repeatable; `ollama` · `anthropic` · `openai` · `google` ·
+`openrouter` · `local-verifier` · `local-sycophancy`). Only the providers you name are registered,
+so a run scoped to `ollama` stays local and free even when hosted API keys are present in the
+environment — an ambient key can never silently redirect or bill it. Pass `--provider` more than
+once to give the router real cross-family failover:
+
+```bash
+# a local seat, pinned per-run, with an OpenRouter failover behind it
+prism verify --provider ollama --provider openrouter \
+  --verifier-model local=qwen2.5:7b \
+  --artifact @patch.py --intent "add two numbers"
+```
+
 ## Environment variables
 
 | Variable | Purpose |
@@ -28,7 +43,8 @@ sidebar:
 | `PRISM_SIGNING_SECRET` | HMAC signing secret (legacy / explicit). |
 | `PRISM_DEV=1` | Use a built-in dev Ed25519 key — INSECURE, local only. |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` | Enable a hosted verifier family. |
-| `PRISM_VERIFIER_MODEL_<FAMILY>` | Override the verifier model id for a family wherever it routes (e.g. `PRISM_VERIFIER_MODEL_OPENAI=gpt-oss:120b-cloud`). A model deprecation is a config change, not a source edit. |
+| `PRISM_VERIFIER_MODEL_<FAMILY>` | Override the verifier model id for a family wherever it routes (e.g. `PRISM_VERIFIER_MODEL_OPENAI=gpt-oss:120b-cloud`). A model deprecation is a config change, not a source edit. Honored by the CLI, the HTTP API, and MCP alike; `prism verify --verifier-model FAMILY=MODEL` overrides it per-run. |
+| `OPENROUTER_API_KEY` + `PRISM_VERIFIER_MODEL_OPENROUTER` | Enable the OpenRouter gateway as one cross-family verifier seat (both required). The model must be a `vendor/model` id whose vendor prism does not model natively — the lineage guard fails closed otherwise, so the seat stays family-different. |
 | `PRISM_<PROVIDER>_MODEL` / `PRISM_<PROVIDER>_BASE_URL` | Override a provider's default model / base URL (`ANTHROPIC` · `OPENAI` · `GOOGLE` · `OLLAMA`). Point `PRISM_OPENAI_BASE_URL` at an OpenAI-compatible endpoint — e.g. Ollama Cloud's `/v1` — to use a hosted model as a cross-family verifier seat. |
 | `PRISM_API_KEYS` | Comma-separated SHA-256 hashes of HTTP bearer API keys. |
 | `PRISM_HTTP_ALLOW_NO_AUTH=1` | Allow unauthenticated HTTP use (local dev only). |

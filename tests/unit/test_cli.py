@@ -121,7 +121,7 @@ class TestVerifyGate:
 
         resp = self._fake_response(verdict, tmp_path)
 
-        async def _fake(request, provider):
+        async def _fake(request, provider_names, verifier_models):
             return resp
 
         monkeypatch.setattr(cli_main, "_run_verify", _fake)
@@ -133,7 +133,7 @@ class TestVerifyGate:
 
         resp = self._fake_response("refuse", tmp_path)
 
-        async def _fake(request, provider):
+        async def _fake(request, provider_names, verifier_models):
             return resp
 
         monkeypatch.setattr(cli_main, "_run_verify", _fake)
