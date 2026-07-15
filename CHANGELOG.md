@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **`test_prune_with_yes_removes_old` raced the system clock** (test-only; no shipped behavior
+  change). It seeded a receipt at `now` and pruned `--older-than 0s`, so it asked whether
+  `now < now` — true only when the clock happened to tick between the two calls. Windows'
+  `datetime.now` advances in ~15.6ms steps, so the test failed roughly two runs in three on a
+  Windows rig while passing every time on Linux CI, whose clock is fine-grained enough that the
+  receipt is always microseconds older. A test that is green a third of the time is the same defect
+  this project exists to name: a gate that looks applied and is not. Fixed by giving the seeded
+  receipt a real age (2 days) and pruning against a realistic cutoff (`1d`), which removes the race
+  rather than widening its window, and pinning the other side of the boundary — a receipt newer than
+  the cutoff must survive, which `--older-than 0s` could never express.
 - **The F-14 verifier registry did not reach the `local-verifier` / `openrouter` caller rows.**
   The same bug class as the transport drift below, one layer in. `with_local_verifier` and
   `with_openrouter` run *after* `resolve_routing_map`, and each wrote its own new caller row from
