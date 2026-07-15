@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from click.testing import CliRunner
@@ -13,7 +13,20 @@ from prism.core.types import ReasoningVisibility
 from prism.receipts.store import ReceiptStore
 
 
-def _seed_receipt(db_path) -> str:
+def _seed_receipt(db_path, age: timedelta | None = None) -> str:
+    """Store one receipt, optionally BACKDATED by ``age``.
+
+    ``create_receipt`` always stamps ``datetime.now(UTC)``, so an age has to be written after the
+    fact. Backdating is what makes a prune test deterministic: ``prune`` deletes on a strict
+    ``timestamp < now - older_than``, so a receipt stamped in the same clock tick as the cutoff is
+    NOT pruned. Giving the row a real age removes that dependency instead of widening it, and lets
+    a test pin BOTH sides of the cutoff — which a zero cutoff cannot, since it makes every receipt
+    a candidate.
+
+    The backdated row's signature still covers its ORIGINAL timestamp. That is fine here and only
+    here: ``prune`` is a time-range DELETE and never validates a signature. Don't reuse an aged
+    receipt in a test that verifies one.
+    """
     store = ReceiptStore(db_path=db_path, signing_secret=b"test-secret")
     r = store.create_receipt(
         pre_strip_hash="a",
@@ -26,6 +39,12 @@ def _seed_receipt(db_path) -> str:
         retryable=False,
         lens_results_json="[]",
     )
+    if age is not None:
+        store._conn.execute(
+            "UPDATE receipts SET timestamp = ? WHERE id = ?",
+            ((datetime.now(UTC) - age).isoformat(), r.id),
+        )
+        store._conn.commit()
     store.close()
     return r.id
 
@@ -76,13 +95,30 @@ class TestReceiptCli:
         assert remaining == 1
 
     def test_prune_with_yes_removes_old(self, tmp_path, monkeypatch):
+        # A 2-day-old receipt against a 1-day cutoff: unambiguously old, whatever the clock's
+        # resolution. The old form seeded a receipt at `now` and pruned `--older-than 0s`, i.e.
+        # asked whether `now < now` — true only if the clock ticked in between.
         db = tmp_path / "cli.db"
-        _seed_receipt(db)
+        _seed_receipt(db, age=timedelta(days=2))
         monkeypatch.setenv("PRISM_DEV", "1")
         monkeypatch.setattr("prism.receipts.store.DEFAULT_DB_PATH", db)
-        result = CliRunner().invoke(cli, ["receipt", "prune", "--older-than", "0s", "--yes"])
+        result = CliRunner().invoke(cli, ["receipt", "prune", "--older-than", "1d", "--yes"])
         assert result.exit_code == 0
         assert json.loads(result.output)["pruned"] == 1
+
+    def test_prune_keeps_receipts_newer_than_the_cutoff(self, tmp_path, monkeypatch):
+        """The other half of the boundary: prune must not take a receipt inside the window.
+
+        `--older-than 0s` could never express this — it made every receipt a prune candidate and
+        the assertion rode on a clock tick. With a real age the window has two sides worth pinning.
+        """
+        db = tmp_path / "cli.db"
+        _seed_receipt(db, age=timedelta(hours=1))
+        monkeypatch.setenv("PRISM_DEV", "1")
+        monkeypatch.setattr("prism.receipts.store.DEFAULT_DB_PATH", db)
+        result = CliRunner().invoke(cli, ["receipt", "prune", "--older-than", "1d", "--yes"])
+        assert result.exit_code == 0
+        assert json.loads(result.output)["pruned"] == 0
 
 
 class TestVerifyGate:

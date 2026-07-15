@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **`test_prune_with_yes_removes_old` depended on the system clock advancing** (test-only; no
+  shipped behavior change). It seeded a receipt at `now` and pruned `--older-than 0s`, which makes
+  the cutoff `now` and the query `WHERE timestamp < now` — so the assertion held only if the clock
+  advanced between seeding the row and computing the cutoff. It asserted a boundary it never meant
+  to depend on: on a fine-grained clock that window is ~1µs and it passes, but on any platform or VM
+  whose `datetime.now` is coarser, the seed and the cutoff can land on the same value and nothing
+  qualifies.
+
+  `--older-than 0s` was the deeper problem: a zero cutoff makes *every* receipt a candidate, so the
+  test could not express the other half of the contract — a receipt **newer** than the cutoff must
+  survive. Fixed by giving the seeded receipt a real age (2 days) and pruning against a realistic
+  cutoff (`1d`), which removes the clock dependency outright rather than widening its window, and
+  pins both sides of the boundary.
+
+  Scope note: an earlier draft of this entry blamed a ~15.6ms Windows `datetime.now` tick and a
+  ~2-in-3 failure rate. Neither reproduced under review — 20k `datetime.now(UTC)` reads on the
+  Windows rig gave 5,813 distinct values at a ~1µs median tick (modern Python resolves
+  `datetime.now` via `GetSystemTimePreciseAsFileTime`; 15.6ms is the older timer-interrupt
+  granularity), and the pre-fix test passed 15/15. The race is real but narrow. This fix stands on
+  the degenerate-boundary argument, not on a failure rate we could not reproduce.
 - **The F-14 verifier registry did not reach the `local-verifier` / `openrouter` caller rows.**
   The same bug class as the transport drift below, one layer in. `with_local_verifier` and
   `with_openrouter` run *after* `resolve_routing_map`, and each wrote its own new caller row from
