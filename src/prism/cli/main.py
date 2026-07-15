@@ -49,6 +49,30 @@ if TYPE_CHECKING:
 # any successful verification, preserving the CLI contract.
 _GATE_EXIT_CODES = {"accept": 0, "revise": 10, "refuse": 20, "escalate": 30}
 
+# `--provider` name -> the key `build_providers_from_env` registers it under. 'ollama' is the
+# established CLI spelling for the local family (it matches `probe-sycophancy
+# --comparator-provider`) while the provider map keys it 'local'.
+_PROVIDER_KEYS = {
+    "ollama": "local",
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "google": "google",
+    "openrouter": "openrouter",
+    "local-verifier": "local-verifier",
+    "local-sycophancy": "local-sycophancy",
+}
+
+# What an operator must set for a named provider to exist. 'ollama' is absent on purpose: the local
+# provider is always built, so it can never be the one reported missing.
+_PROVIDER_ENV_HINTS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY + PRISM_VERIFIER_MODEL_OPENROUTER",
+    "local-verifier": "PRISM_LOCAL_VERIFIER_ENDPOINT",
+    "local-sycophancy": "PRISM_SYCOPHANCY_ENDPOINT",
+}
+
 
 @click.group()
 @click.version_option(version=__version__, prog_name="prism")  # static — works in the frozen binary
@@ -80,7 +104,24 @@ def cli() -> None:
     help="Comma-separated lens names or 'auto'",
 )
 @click.option("--max-latency-ms", default=5000, type=int, help="Latency budget in ms")
-@click.option("--provider", default="ollama", help="Provider to use (ollama, anthropic)")
+@click.option(
+    "--provider",
+    "provider_names",
+    multiple=True,
+    type=click.Choice(sorted(_PROVIDER_KEYS)),
+    default=("ollama",),
+    show_default=True,
+    help="Verifier provider(s) to ALLOW, repeatable. Only the named providers are registered, so "
+    "an ambient API key can never redirect (or bill) a run you scoped to ollama.",
+)
+@click.option(
+    "--verifier-model",
+    "verifier_models",
+    multiple=True,
+    metavar="FAMILY=MODEL",
+    help="Pin a verifier family's model, repeatable (e.g. openai=gpt-oss:120b-cloud). Takes "
+    "precedence over PRISM_VERIFIER_MODEL_<FAMILY>.",
+)
 @click.option(
     "--gate",
     is_flag=True,
@@ -94,7 +135,8 @@ def verify(
     caller_model: str,
     lenses: str,
     max_latency_ms: int,
-    provider: str,
+    provider_names: tuple[str, ...],
+    verifier_models: tuple[str, ...],
     gate: bool,
 ) -> None:
     """Verify an artifact against intent through multi-lens adjudication."""
@@ -129,7 +171,7 @@ def verify(
         budget=Budget(max_latency_ms=max_latency_ms),
     )
 
-    result = asyncio.run(_run_verify(request, provider))
+    result = asyncio.run(_run_verify(request, provider_names, verifier_models))
 
     # Output JSON
     if isinstance(result, VerifyError):
@@ -143,42 +185,102 @@ def verify(
         sys.exit(_GATE_EXIT_CODES.get(result.verdict.value, 0))
 
 
-async def _run_verify(request: VerifyRequest, provider_name: str) -> VerifyResponse | VerifyError:
-    """Set up engine and run verification."""
+def _parse_verifier_models(values: Sequence[str]) -> dict[str, str]:
+    """Parse repeatable ``--verifier-model FAMILY=MODEL`` into F-14 registry env overrides.
+
+    The flag is sugar for ``PRISM_VERIFIER_MODEL_<FAMILY>``, so it RETURNS the env shape rather than
+    opening a second override channel: precedence then costs one dict merge over ``os.environ`` and
+    ``resolve_routing_map`` needs no new merge logic.
+
+    Only families that carry their model in the ROUTING MAP are overridable. openrouter /
+    local-verifier / local-sycophancy take theirs from provider config (validated at construction —
+    the OpenRouter lineage guard depends on that), and the map is then written FROM the provider, so
+    an override here would be silently discarded. Silently-discarded config is the bug this whole
+    change exists to kill, so those are refused loudly instead.
+    """
+    from prism.core.routing import DEFAULT_ROUTING_MAP
+
+    overridable = {f.value for routes in DEFAULT_ROUTING_MAP.values() for f, _ in routes}
+    overrides: dict[str, str] = {}
+    for raw in values:
+        name, sep, model_id = raw.partition("=")
+        name, model_id = name.strip().lower(), model_id.strip()
+        if not sep or not name or not model_id:
+            raise click.BadParameter(
+                f"--verifier-model {raw!r} is not FAMILY=MODEL (e.g. openai=gpt-oss:120b-cloud)"
+            )
+        try:
+            family = ModelFamily(name)
+        except ValueError:
+            raise click.BadParameter(
+                f"--verifier-model {raw!r}: unknown family {name!r}; "
+                f"choose from {', '.join(sorted(overridable))}"
+            ) from None
+        if name not in overridable:
+            raise click.BadParameter(
+                f"--verifier-model {raw!r}: {name}'s verifier model is PROVIDER configuration, not "
+                f"a routing override — set PRISM_VERIFIER_MODEL_{family.name} instead, so it is "
+                "validated when the provider is built."
+            )
+        overrides[f"PRISM_VERIFIER_MODEL_{family.name}"] = model_id
+    return overrides
+
+
+def _build_verify_engine(
+    provider_names: Sequence[str],
+    verifier_models: Sequence[str] = (),
+) -> VerificationEngine:
+    """Build the ``prism verify`` engine: an explicit provider ALLOWLIST + the F-14 registry.
+
+    ``--provider`` is an allowlist OVER ``build_providers_from_env()``, not a second provider
+    constructor. Two properties fall out that the old hand-built map could not offer:
+
+      * every env knob the shared factory honors reaches the CLI too — the F-14 verifier registry
+        (the bug: a ``PRISM_VERIFIER_MODEL_*`` pin was silently ignored here), the
+        ``PRISM_*_BASE_URL`` overrides, and the OpenRouter lineage guard — so the CLI cannot drift
+        from MCP/HTTP again; and
+      * ONLY the named providers are registered, so ``--provider ollama`` is free BY CONSTRUCTION.
+        Calling ``build_default_engine()`` here instead would register every family holding an
+        ambient key, and for caller=anthropic the route order is GOOGLE -> OPENAI -> LOCAL: a stray
+        GOOGLE_API_KEY would silently redirect the run to gemini-2.5-pro and bill for it.
+    """
+    import os
+
     from prism.core.engine import VerificationEngine
-    from prism.lenses.boundary import CrossBoundaryLens
-    from prism.lenses.contract import ContractCompletenessLens
-    from prism.lenses.groundedness import GroundednessLens
-    from prism.lenses.invariant import InvariantLens
-    from prism.lenses.registry import register_lens
+    from prism.core.routing import FamilyRouter
+    from prism.core.setup import (
+        build_providers_from_env,
+        register_default_lenses,
+        resolve_engine_routing_map,
+    )
 
-    # Register default lenses
-    register_lens(ContractCompletenessLens())
-    register_lens(CrossBoundaryLens())
-    register_lens(InvariantLens())
-    register_lens(GroundednessLens())
+    register_default_lenses()
+    overrides = _parse_verifier_models(verifier_models)
+    configured = build_providers_from_env()
 
-    # Set up provider
     providers: dict[str, ModelProvider] = {}
-    if provider_name == "ollama":
-        from prism.providers.ollama import OllamaProvider
+    for name in provider_names:
+        key = _PROVIDER_KEYS[name]
+        if key not in configured:
+            raise click.ClickException(
+                f"--provider {name} is not configured; set {_PROVIDER_ENV_HINTS[name]}"
+            )
+        providers[key] = configured[key]
 
-        providers["local"] = OllamaProvider()
-    elif provider_name == "anthropic":
-        import os
+    routing_map = resolve_engine_routing_map(providers, env={**os.environ, **overrides})
+    return VerificationEngine(providers=providers, router=FamilyRouter(routing_map=routing_map))
 
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            click.echo("Error: ANTHROPIC_API_KEY not set", err=True)
-            sys.exit(1)
-        from prism.providers.anthropic import AnthropicProvider
 
-        providers["anthropic"] = AnthropicProvider(api_key=api_key)
-
+async def _run_verify(
+    request: VerifyRequest,
+    provider_names: Sequence[str],
+    verifier_models: Sequence[str] = (),
+) -> VerifyResponse | VerifyError:
+    """Set up engine and run verification."""
     from prism.receipts.store import SigningSecretError
 
     try:
-        engine = VerificationEngine(providers=providers)
+        engine = _build_verify_engine(provider_names, verifier_models)
     except SigningSecretError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(2)
@@ -703,8 +805,11 @@ def _write_round_robin_receipt(
         "n_problems": result.n_problems,
         "n_interpretable_families": result.n_interpretable_families,
         "per_family": [
-            {"family": sp.verifier_family, "self_preference": sp.self_preference,
-             "interpretable": sp.interpretable}
+            {
+                "family": sp.verifier_family,
+                "self_preference": sp.self_preference,
+                "interpretable": sp.interpretable,
+            }
             for sp in result.per_family
         ],
     }
@@ -1247,9 +1352,7 @@ def _sign_probe_receipt(
 )
 @click.option("--producer-model", default="producer", help="Model id sent to the producer")
 @click.option("--context", "-c", required=True, help="The user turn / question (or @file)")
-@click.option(
-    "--answer", required=True, help="The producer's original COMMITTED answer (or @file)"
-)
+@click.option("--answer", required=True, help="The producer's original COMMITTED answer (or @file)")
 @click.option(
     "--reference",
     default=None,

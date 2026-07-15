@@ -8,6 +8,7 @@ over the engine this returns.
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
 from prism.core.engine import VerificationEngine
 from prism.core.observability import routing_logger
@@ -17,6 +18,12 @@ from prism.lenses.groundedness import GroundednessLens
 from prism.lenses.invariant import InvariantLens
 from prism.lenses.registry import register_lens
 from prism.providers.base import ModelProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from prism.core.types import ModelFamily
+    from prism.receipts.store import ReceiptStore
 
 
 def register_default_lenses() -> None:
@@ -118,7 +125,38 @@ def build_providers_from_env() -> dict[str, ModelProvider]:
     return providers
 
 
-def build_default_engine() -> VerificationEngine:
+def resolve_engine_routing_map(
+    providers: Mapping[str, ModelProvider],
+    env: Mapping[str, str] | None = None,
+) -> dict[ModelFamily, list[tuple[ModelFamily, str]]]:
+    """Assemble a provider set's routing map: the F-14 env registry + the conditional injections.
+
+    ONE place assembles the map so the transports cannot drift — because the drift this ends is
+    exactly the one that shipped: ``resolve_routing_map`` (the ``PRISM_VERIFIER_MODEL_*`` reader)
+    was reachable ONLY through ``build_default_engine``, which only the MCP server called, so
+    ``prism verify`` and the HTTP API silently served DEFAULT_ROUTING_MAP's hardcoded model ids. Any
+    surface building an engine for production traffic resolves its map through here.
+
+    The injections are gated on the PROVIDER SET rather than on env, so a caller that narrowed its
+    providers (the CLI's ``--provider`` allowlist) cannot have a specialist it never asked for
+    prepended as its primary verifier. ``env`` defaults to ``os.environ``; the CLI passes its
+    ``--verifier-model`` overrides merged over it, which is all "flag beats env" needs to be.
+    """
+    from prism.core.routing import resolve_routing_map, with_local_verifier, with_openrouter
+
+    routing_map = resolve_routing_map(env=env)
+    if "local-verifier" in providers:
+        routing_map = with_local_verifier(
+            routing_map, providers["local-verifier"].available_models[0]
+        )
+    # Append the OpenRouter cross-family failover seat when configured (after the local Verifier
+    # specialist prepend, so the specialist stays primary and OpenRouter fills in behind everyone).
+    if "openrouter" in providers:
+        routing_map = with_openrouter(routing_map, providers["openrouter"].available_models[0])
+    return routing_map
+
+
+def build_default_engine(receipt_store: ReceiptStore | None = None) -> VerificationEngine:
     """Register the default lenses and construct an engine with env-configured providers.
 
     The routing map is resolved from env (F-14: PRISM_VERIFIER_MODEL_*), so a verifier model
@@ -126,26 +164,18 @@ def build_default_engine() -> VerificationEngine:
     config change, not a source edit. When unset, the resolved map equals DEFAULT_ROUTING_MAP. When
     the local Verifier specialist is configured (PRISM_LOCAL_VERIFIER_ENDPOINT), it is prepended as
     the PRIMARY citation verifier (failing over to the hosted/mistral verifiers behind it).
+
+    ``receipt_store`` lets a surface own the store's lifecycle (the HTTP app closes it on shutdown);
+    None keeps the engine's own env-resolved default.
     """
     register_default_lenses()
     providers = build_providers_from_env()
-    from prism.core.routing import (
-        FamilyRouter,
-        resolve_routing_map,
-        routing_map_digest,
-        with_local_verifier,
-        with_openrouter,
-    )
+    from prism.core.routing import FamilyRouter, routing_map_digest
 
-    routing_map = resolve_routing_map()
-    if "local-verifier" in providers:
-        model_id = providers["local-verifier"].available_models[0]
-        routing_map = with_local_verifier(routing_map, model_id)
-    # Append the OpenRouter cross-family failover seat when configured (after the local Verifier
-    # specialist prepend, so the specialist stays primary and OpenRouter fills in behind everyone).
-    if "openrouter" in providers:
-        routing_map = with_openrouter(
-            routing_map, providers["openrouter"].available_models[0]
-        )
+    routing_map = resolve_engine_routing_map(providers)
     routing_logger.info("routing_map_resolved", extra={"digest": routing_map_digest(routing_map)})
-    return VerificationEngine(providers=providers, router=FamilyRouter(routing_map=routing_map))
+    return VerificationEngine(
+        providers=providers,
+        router=FamilyRouter(routing_map=routing_map),
+        receipt_store=receipt_store,
+    )
