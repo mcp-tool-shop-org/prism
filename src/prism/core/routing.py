@@ -8,6 +8,19 @@ Justification:
 - Wataoka 2024: self-preference bias is perplexity-driven (familiarity = correctness regression)
 - Li et al. ICLR 2026: same-lineage judges favor outputs even without identity disclosure
 
+SCOPE — Lock 1 compares family LABELS, and the literature above is about LINEAGE. Those coincide for
+ANTHROPIC / OPENAI / GOOGLE, whose label IS a lineage claim the operator owns. They do NOT coincide
+for ``local`` / ``local-*`` / ``openrouter``, which are TRANSPORT labels: prism tags every Ollama
+model ``local`` and every gateway model ``openrouter``, so per-seat identity there is the model id.
+Two seats with different labels can therefore be one lineage — e.g. a LOCAL seat pinned to
+``qwen2.5:7b`` verified by an OPENROUTER seat at ``qwen/qwen-2.5-72b-instruct`` — and the
+family-difference check passes while the guarantee it stands for does not hold. The config-time
+patch for one case of this lives in ``providers/openrouter.py`` (``BLOCKED_VENDORS``), which
+documents the full limitation; the gap is pinned in
+``tests/unit/test_openrouter.py::TestKnownGapLabelIsNotLineage``. Closing it properly means checking
+lineage HERE, against ``CallerContext.model_id``, at request time — the caller's model id is the
+input the config-time guard structurally lacks.
+
 MEASUREMENT-ONLY ESCAPE HATCH (``FamilyRouter(allow_same_family=True)``): the ONLY way to disable
 Lock 1. It exists solely so the ``prism eval --family-ab`` calibration can build a same-family
 *control* arm and MEASURE the cost of self-preference. It defaults OFF and is set True in exactly
