@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **OpenRouter cross-family verifier seat (F-14)** — a new `OPENROUTER` model family +
+  `OpenRouterProvider` (OpenAI-compatible gateway) makes the whole OpenRouter catalog available as a
+  cross-family verifier through one key. Opt-in: built only when BOTH `OPENROUTER_API_KEY` and
+  `PRISM_VERIFIER_MODEL_OPENROUTER` are set (`PRISM_OPENROUTER_BASE_URL` overrides the endpoint).
+  It is **appended** as a cross-family *failover*, so it fills in behind a caller's native verifiers
+  — and becomes the serviceable cross-family route for a local-producer + OpenRouter deployment with
+  no native hosted keys. `DEFAULT_ROUTING_MAP` is byte-identical when the seat is unconfigured.
+  - **Lock-1 lineage guard** (`validate_openrouter_lineage`): because `openrouter` is a *transport*,
+    not a lineage, the seat **fails closed** at engine construction if the configured model's vendor
+    prefix collides with a family prism models natively (`anthropic`/`openai`/`google`/`mistral`) or
+    is non-deterministic (`openrouter/auto`) — so the OPENROUTER label can only ever carry a
+    genuinely family-distinct model (deepseek/qwen/cohere/nvidia/meta-llama/…), keeping the
+    family-different guarantee honest.
+
 ## [1.6.0] - 2026-06-14
 
 ### Added

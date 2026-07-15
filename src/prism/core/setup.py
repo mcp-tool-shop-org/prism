@@ -97,6 +97,24 @@ def build_providers_from_env() -> dict[str, ModelProvider]:
             base_url=os.environ.get("PRISM_GOOGLE_BASE_URL", _GOOGLE_BASE),
         )
 
+    # OpenRouter — a multi-vendor GATEWAY as a cross-family verifier seat (F-14). Built ONLY when
+    # BOTH the key AND the model are set: OPENROUTER_API_KEY alone (e.g. a rig-wide key for other
+    # tooling) must NOT perturb prism, and OpenRouter has no single default model. The lineage guard
+    # fails CLOSED if the configured model's vendor collides with a native prism family, keeping
+    # the OPENROUTER label honest for Lock 1. PRISM_OPENROUTER_BASE_URL overrides the endpoint.
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    openrouter_model = os.environ.get("PRISM_VERIFIER_MODEL_OPENROUTER")
+    if openrouter_key and openrouter_model:
+        from prism.providers.openrouter import DEFAULT_BASE_URL as _OPENROUTER_BASE
+        from prism.providers.openrouter import OpenRouterProvider, validate_openrouter_lineage
+
+        validate_openrouter_lineage(openrouter_model)
+        providers["openrouter"] = OpenRouterProvider(
+            api_key=openrouter_key,
+            model_id=openrouter_model,
+            base_url=os.environ.get("PRISM_OPENROUTER_BASE_URL", _OPENROUTER_BASE),
+        )
+
     return providers
 
 
@@ -116,11 +134,18 @@ def build_default_engine() -> VerificationEngine:
         resolve_routing_map,
         routing_map_digest,
         with_local_verifier,
+        with_openrouter,
     )
 
     routing_map = resolve_routing_map()
     if "local-verifier" in providers:
         model_id = providers["local-verifier"].available_models[0]
         routing_map = with_local_verifier(routing_map, model_id)
+    # Append the OpenRouter cross-family failover seat when configured (after the local Verifier
+    # specialist prepend, so the specialist stays primary and OpenRouter fills in behind everyone).
+    if "openrouter" in providers:
+        routing_map = with_openrouter(
+            routing_map, providers["openrouter"].available_models[0]
+        )
     routing_logger.info("routing_map_resolved", extra={"digest": routing_map_digest(routing_map)})
     return VerificationEngine(providers=providers, router=FamilyRouter(routing_map=routing_map))
