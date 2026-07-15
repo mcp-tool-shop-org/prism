@@ -19,8 +19,9 @@ def _seed_receipt(db_path, age: timedelta | None = None) -> str:
     ``create_receipt`` always stamps ``datetime.now(UTC)``, so an age has to be written after the
     fact. Backdating is what makes a prune test deterministic: ``prune`` deletes on a strict
     ``timestamp < now - older_than``, so a receipt stamped in the same clock tick as the cutoff is
-    NOT pruned — and Windows' ``datetime.now`` ticks at ~15.6ms, which is wide enough to swallow a
-    whole test. Giving the row a real age removes the race instead of widening it.
+    NOT pruned. Giving the row a real age removes that dependency instead of widening it, and lets
+    a test pin BOTH sides of the cutoff — which a zero cutoff cannot, since it makes every receipt
+    a candidate.
 
     The backdated row's signature still covers its ORIGINAL timestamp. That is fine here and only
     here: ``prune`` is a time-range DELETE and never validates a signature. Don't reuse an aged
@@ -96,8 +97,7 @@ class TestReceiptCli:
     def test_prune_with_yes_removes_old(self, tmp_path, monkeypatch):
         # A 2-day-old receipt against a 1-day cutoff: unambiguously old, whatever the clock's
         # resolution. The old form seeded a receipt at `now` and pruned `--older-than 0s`, i.e.
-        # asked whether `now < now` — true only if the clock happened to tick in between, so it
-        # failed ~2 runs in 3 on Windows and always passed on Linux CI.
+        # asked whether `now < now` — true only if the clock ticked in between.
         db = tmp_path / "cli.db"
         _seed_receipt(db, age=timedelta(days=2))
         monkeypatch.setenv("PRISM_DEV", "1")
