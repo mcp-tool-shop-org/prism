@@ -53,6 +53,37 @@ DEFAULT_ROUTING_MAP: dict[ModelFamily, list[tuple[ModelFamily, str]]] = {
 }
 
 
+# The verifier seats an INJECTED caller row routes to, in preference order. Which FAMILIES appear
+# is fixed here; which MODEL each resolves to is read off ``base`` — see ``_injected_caller_row``.
+_INJECTED_ROW_SEATS = (
+    ModelFamily.ANTHROPIC,
+    ModelFamily.OPENAI,
+    ModelFamily.GOOGLE,
+    ModelFamily.LOCAL,
+)
+
+
+def _injected_caller_row(
+    base: dict[ModelFamily, list[tuple[ModelFamily, str]]],
+) -> list[tuple[ModelFamily, str]]:
+    """The verifier row for a caller family ``base`` has no row for yet (LOCAL_VERIFIER/OPENROUTER).
+
+    The model ids are DERIVED from the seats already present in ``base`` rather than written out
+    here, because ``base`` has been through the F-14 registry (``resolve_routing_map``) and a row
+    written here has not. Hardcoding them duplicated ``DEFAULT_ROUTING_MAP``'s ids and then rotted:
+    a ``PRISM_VERIFIER_MODEL_LOCAL`` pin moved every other caller's LOCAL seat while these two rows
+    kept serving ``mistral-small:24b`` — the pin LOOKED applied and was not, the same failure the
+    registry fix existed to kill. Deriving states the actual invariant: an injected caller routes to
+    the SAME seats every other caller routes to.
+
+    Reads the id per family off ``base``'s existing routes, which assign one model per verifier
+    family (``DEFAULT_ROUTING_MAP`` does, and ``resolve_routing_map`` overrides a family uniformly).
+    A seat absent from ``base`` is omitted rather than invented.
+    """
+    seats = {family: model_id for routes in base.values() for family, model_id in routes}
+    return [(family, seats[family]) for family in _INJECTED_ROW_SEATS if family in seats]
+
+
 def with_local_verifier(
     base: dict[ModelFamily, list[tuple[ModelFamily, str]]],
     model_id: str = "qwen3-14b-groundedness",
@@ -70,12 +101,8 @@ def with_local_verifier(
         caller: [(ModelFamily.LOCAL_VERIFIER, model_id), *verifiers]
         for caller, verifiers in base.items()
     }
-    out[ModelFamily.LOCAL_VERIFIER] = [
-        (ModelFamily.ANTHROPIC, "claude-sonnet-4-6"),
-        (ModelFamily.OPENAI, "gpt-5.4-mini"),
-        (ModelFamily.GOOGLE, "gemini-2.5-pro"),
-        (ModelFamily.LOCAL, "mistral-small:24b"),
-    ]
+    # Derived from ``base`` (pre-prepend), so the specialist never verifies itself — Lock 1.
+    out[ModelFamily.LOCAL_VERIFIER] = _injected_caller_row(base)
     return out
 
 
@@ -101,12 +128,8 @@ def with_openrouter(
         caller: [*verifiers, (ModelFamily.OPENROUTER, model_id)]
         for caller, verifiers in base.items()
     }
-    out[ModelFamily.OPENROUTER] = [
-        (ModelFamily.ANTHROPIC, "claude-sonnet-4-6"),
-        (ModelFamily.OPENAI, "gpt-5.4-mini"),
-        (ModelFamily.GOOGLE, "gemini-2.5-pro"),
-        (ModelFamily.LOCAL, "mistral-small:24b"),
-    ]
+    # Derived from ``base`` (pre-append), so the seat never verifies itself — Lock 1.
+    out[ModelFamily.OPENROUTER] = _injected_caller_row(base)
     return out
 
 
