@@ -105,6 +105,42 @@ class TestRegistryHonoredOnEverySurface:
         assert _selected(build(), ModelFamily.ANTHROPIC) == ("local", _DEFAULT_LOCAL)
 
 
+class TestRegistryHonoredOnInjectedCallerRows:
+    """The same bug class as the surface drift above, one layer in.
+
+    ``with_local_verifier`` / ``with_openrouter`` run AFTER ``resolve_routing_map``, and each wrote
+    its OWN new caller row (LOCAL_VERIFIER / OPENROUTER) from HARDCODED model ids. So those two
+    callers silently served ``mistral-small:24b`` no matter what the operator pinned — a pin LOOKED
+    applied and was not, which is the exact failure the registry fix existed to kill. It survived
+    that fix because every registry test asserts on caller=anthropic, a row nothing injects.
+    """
+
+    @pytest.fixture
+    def injected_env(self, clean_env: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+        """Both specialists configured, so both injected caller rows exist in the map."""
+        clean_env.setenv("PRISM_LOCAL_VERIFIER_ENDPOINT", "http://localhost:9/v1")
+        clean_env.setenv("OPENROUTER_API_KEY", "k")
+        clean_env.setenv("PRISM_VERIFIER_MODEL_OPENROUTER", _OR_MODEL)
+        return clean_env
+
+    @pytest.mark.parametrize("caller", [ModelFamily.LOCAL_VERIFIER, ModelFamily.OPENROUTER])
+    def test_pin_reaches_the_injected_caller_rows(
+        self, injected_env: pytest.MonkeyPatch, caller: ModelFamily
+    ) -> None:
+        """The regression proper: fails on both injected rows before the fix."""
+        injected_env.setenv("PRISM_VERIFIER_MODEL_LOCAL", _PIN)
+        # Only local / local-verifier / openrouter have providers here, so each injected caller
+        # walks past the hosted families and lands on the LOCAL seat — the PINNED model.
+        assert _selected(build_default_engine(), caller) == ("local", _PIN)
+
+    @pytest.mark.parametrize("caller", [ModelFamily.LOCAL_VERIFIER, ModelFamily.OPENROUTER])
+    def test_unset_registry_leaves_injected_rows_byte_identical(
+        self, injected_env: pytest.MonkeyPatch, caller: ModelFamily
+    ) -> None:
+        """Deriving the row must not perturb the shipped contract when nothing is pinned."""
+        assert _selected(build_default_engine(), caller) == ("local", _DEFAULT_LOCAL)
+
+
 class TestProviderAllowlist:
     def test_ollama_stays_free_when_cloud_keys_are_ambient(
         self, clean_env: pytest.MonkeyPatch

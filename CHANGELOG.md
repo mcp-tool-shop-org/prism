@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **The F-14 verifier registry did not reach the `local-verifier` / `openrouter` caller rows.**
+  The same bug class as the transport drift below, one layer in. `with_local_verifier` and
+  `with_openrouter` run *after* `resolve_routing_map`, and each wrote its own new caller row from
+  **hardcoded** model ids — so a `LOCAL_VERIFIER` or `OPENROUTER` caller kept being verified by
+  `mistral-small:24b` no matter what was pinned, while every other caller's LOCAL seat moved. A pin
+  **looked applied and was not**, exactly the failure the fix below existed to kill. It survived
+  that fix because every registry test asserted on `caller=anthropic` — a row nothing injects.
+  Both rows are now **derived** from the seats already present in the resolved map rather than
+  restating `DEFAULT_ROUTING_MAP`'s ids, which states the real invariant (an injected caller routes
+  to the same seats every other caller routes to) and cannot rot the same way. Parametrized tests
+  pin both rows, and the byte-identical contract still holds when nothing is pinned.
 - **The F-14 verifier registry was silently ignored by `prism verify` and the HTTP API.**
   `resolve_routing_map` (the only reader of `PRISM_VERIFIER_MODEL_*`) was reachable *only* through
   `build_default_engine`, which only the MCP server called. Both other transports hand-built a
