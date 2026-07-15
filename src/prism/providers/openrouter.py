@@ -8,12 +8,39 @@ prism believes is cross-family (a silent same-family verdict, the exact failure 
 prevent).
 
 ``validate_openrouter_lineage`` is the config-time guard that keeps the OPENROUTER family honest: it
-REFUSES a configured model whose vendor prefix collides with a family prism already models natively
-(anthropic / openai / google / mistral) or is non-deterministic (``openrouter/auto``), so the seat
-can only ever carry a genuinely family-distinct model (deepseek / qwen / cohere / nvidia /
-meta-llama / ...). Opt-in: the provider is built ONLY when BOTH ``OPENROUTER_API_KEY`` and
-``PRISM_VERIFIER_MODEL_OPENROUTER`` are set (core/setup.py); ``PRISM_OPENROUTER_BASE_URL`` overrides
-the endpoint.
+REFUSES a configured model whose vendor prefix collides with a lineage of the SHIPPED DEFAULT
+routing map (anthropic / openai / google, plus mistral because LOCAL defaults to
+``mistral-small:24b``) or is non-deterministic (``openrouter/auto``). Opt-in: the provider is built
+ONLY when BOTH ``OPENROUTER_API_KEY`` and ``PRISM_VERIFIER_MODEL_OPENROUTER`` are set
+(core/setup.py); ``PRISM_OPENROUTER_BASE_URL`` overrides the endpoint.
+
+KNOWN LIMITATION — the guard covers DEFAULT lineages, not configured ones. Read "default" as
+load-bearing. Lock 1 compares family LABELS, and that is sound only where a label is a lineage:
+ANTHROPIC / OPENAI / GOOGLE are lineage claims the operator owns. But ``local`` and ``openrouter``
+are TRANSPORT labels — prism tags every Ollama model ``local`` and every gateway model
+``openrouter`` — so for those two the lineage lives in the MODEL ID, and per-seat identity is the
+model id, not a prism family. ``BLOCKED_VENDORS`` patches exactly ONE instance of that gap, and it
+patches it with a constant: ``mistral`` is blocked *because* LOCAL defaults to mistral. The F-14
+registry (``PRISM_VERIFIER_MODEL_LOCAL``) makes that value configurable, so the constant is a
+snapshot of something the operator can move::
+
+    PRISM_VERIFIER_MODEL_LOCAL=qwen2.5:7b
+    PRISM_VERIFIER_MODEL_OPENROUTER=qwen/qwen-2.5-72b-instruct
+    # caller local/qwen2.5:7b -> verifier openrouter/qwen-2.5-72b: cross-family LABEL, same LINEAGE.
+
+Both settings are individually reasonable — the operator does nothing wrong; the collision is
+emergent. Extending the list (adding ``qwen``, ``llama``, ...) does NOT fix this: the list cannot
+work in principle, only in the default configuration, because it is a static answer to a
+configurable question.
+
+The real fix is a REQUEST-time caller-vs-verifier lineage check: only at request time does the
+caller's model id exist (``CallerContext.model_id``), and only then is the question answerable at
+all. A config-time check can compare the OpenRouter seat against other SEATS, but that is a proxy —
+one verifier serves a request (the engine records ``verifier_models=[route.model_id]``), so two
+same-lineage seats are a real collision only when the CALLER shares that lineage. Failing engine
+construction on the proxy would refuse working deployments (two qwen seats are both genuinely
+cross-family to an ``anthropic`` caller). Tests pin this gap in
+``tests/unit/test_openrouter.py::TestKnownGapLabelIsNotLineage``.
 """
 
 from __future__ import annotations
@@ -37,12 +64,17 @@ from prism.providers.base import (
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 _NAME = "openrouter"
 
-# Vendor prefixes whose lineage prism ALREADY models as a first-class family — anthropic / openai /
-# google natively, and ``mistral``/``mistralai`` is the LOCAL lineage (mistral-small:24b). An
+# Vendor prefixes whose lineage the SHIPPED DEFAULT routing map already serves — anthropic / openai
+# / google natively, and ``mistral``/``mistralai`` because LOCAL DEFAULTS to mistral-small:24b. An
 # OpenRouter seat wearing the OPENROUTER label while serving one of these would defeat Lock 1 for
 # that caller family. ``openrouter`` itself (the auto-router) is non-deterministic — it can resolve
-# to any of the above — so it is blocked too. Everything else (deepseek, qwen, cohere, nvidia,
-# meta-llama, x-ai, ...) is genuinely distinct from every prism caller and is allowed.
+# to any of the above — so it is blocked too.
+#
+# Everything else (deepseek, qwen, cohere, nvidia, meta-llama, x-ai, ...) is allowed. NOTE what that
+# does and does not mean: allowed = "not a DEFAULT lineage", NOT "distinct from every prism caller".
+# The latter is not knowable from a model id, and is false once LOCAL is repointed — see the KNOWN
+# LIMITATION in the module docstring. This list is a static answer to a question the F-14 registry
+# made configurable; do NOT try to fix that by appending vendors, which only moves the hole.
 BLOCKED_VENDORS = frozenset(
     {"anthropic", "openai", "google", "mistral", "mistralai", "openrouter"}
 )
@@ -53,12 +85,17 @@ class OpenRouterLineageError(ValueError):
 
 
 def validate_openrouter_lineage(model_id: str) -> None:
-    """Refuse an OpenRouter model whose true lineage isn't distinct from every prism caller family.
+    """Refuse an OpenRouter model whose vendor collides with a DEFAULT prism lineage.
 
-    OpenRouter model ids are ``vendor/model``. The ``vendor`` prefix is the lineage signal Lock 1
-    needs: a seat labeled OPENROUTER must carry a vendor prism does NOT otherwise model, or the
-    cross-family guarantee is a lie for that caller. Raises ``OpenRouterLineageError`` (a config
-    error — fail-closed at engine construction) on a colliding or indeterminate vendor.
+    OpenRouter model ids are ``vendor/model``. The ``vendor`` prefix is the only lineage signal
+    available at config time: a seat labeled OPENROUTER must not carry a vendor the default routing
+    map already serves, or the cross-family guarantee is a lie for that caller. Raises
+    ``OpenRouterLineageError`` (a config error — fail-closed at engine construction) on a colliding
+    or indeterminate vendor.
+
+    This is NOT "distinct from every prism caller" — that is not decidable from a model id, and this
+    guard does not claim it. It is sound for the default configuration and has a known hole once
+    ``PRISM_VERIFIER_MODEL_LOCAL`` repoints the LOCAL seat; see the module docstring.
     """
     vendor = model_id.split("/", 1)[0].strip().lower() if "/" in model_id else ""
     if not vendor:

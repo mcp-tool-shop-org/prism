@@ -44,11 +44,47 @@ prism verify --provider ollama --provider openrouter \
 | `PRISM_DEV=1` | Use a built-in dev Ed25519 key — INSECURE, local only. |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` | Enable a hosted verifier family. |
 | `PRISM_VERIFIER_MODEL_<FAMILY>` | Override the verifier model id for a family wherever it routes (e.g. `PRISM_VERIFIER_MODEL_OPENAI=gpt-oss:120b-cloud`). A model deprecation is a config change, not a source edit. Honored by the CLI, the HTTP API, and MCP alike; `prism verify --verifier-model FAMILY=MODEL` overrides it per-run. |
-| `OPENROUTER_API_KEY` + `PRISM_VERIFIER_MODEL_OPENROUTER` | Enable the OpenRouter gateway as one cross-family verifier seat (both required). The model must be a `vendor/model` id whose vendor prism does not model natively — the lineage guard fails closed otherwise, so the seat stays family-different. |
+| `OPENROUTER_API_KEY` + `PRISM_VERIFIER_MODEL_OPENROUTER` | Enable the OpenRouter gateway as one cross-family verifier seat (both required). The model must be a `vendor/model` id whose vendor is not one prism serves by default — the lineage guard fails closed otherwise. See [What the lineage guard does and does not check](#what-the-lineage-guard-does-and-does-not-check) before pairing it with a repointed `local` seat. |
 | `PRISM_<PROVIDER>_MODEL` / `PRISM_<PROVIDER>_BASE_URL` | Override a provider's default model / base URL (`ANTHROPIC` · `OPENAI` · `GOOGLE` · `OLLAMA`). Point `PRISM_OPENAI_BASE_URL` at an OpenAI-compatible endpoint — e.g. Ollama Cloud's `/v1` — to use a hosted model as a cross-family verifier seat. |
 | `PRISM_API_KEYS` | Comma-separated SHA-256 hashes of HTTP bearer API keys. |
 | `PRISM_HTTP_ALLOW_NO_AUTH=1` | Allow unauthenticated HTTP use (local dev only). |
 | `PRISM_WEBHOOK_SECRET` | Sign async/escalate webhook deliveries. |
+
+## What the lineage guard does and does not check
+
+Lock 1 keeps a verifier in a different **family** from the caller. That is what you want when a
+family label means a lineage — `anthropic`, `openai`, and `google` each name who trained the model,
+and you own that claim when you point the seat somewhere.
+
+`local` and `openrouter` are different: they are **transports**, not lineages. prism labels every
+Ollama model `local` and every gateway model `openrouter`, so for those two the lineage lives in the
+model id rather than the family. Two seats with different labels can be the same lineage.
+
+The OpenRouter lineage guard refuses a `vendor/model` whose vendor is one prism serves **by
+default** — `anthropic`, `openai`, `google`, and `mistral` (because `local` defaults to
+`mistral-small:24b`). Read *by default* literally. `PRISM_VERIFIER_MODEL_LOCAL` lets you repoint the
+local seat, and the guard is a fixed list that cannot know you did:
+
+```bash
+PRISM_VERIFIER_MODEL_LOCAL=qwen2.5:7b
+PRISM_VERIFIER_MODEL_OPENROUTER=qwen/qwen-2.5-72b-instruct
+# A local qwen producer is now "cross-family"-verified by qwen: different label, same lineage.
+# The guard does not raise, and the receipt records a family-different verification.
+```
+
+Neither setting is wrong on its own — the collision is emergent, which is exactly why the guard
+cannot catch it. It has only the model id, and nothing in `qwen/qwen-2.5-72b-instruct` reveals what
+`local` was pinned to. Extending the blocklist does not fix this in principle; it is a static answer
+to a question your configuration can change.
+
+**What to do:** if you repoint `local` (or a `local-*` specialist), check that your OpenRouter seat
+is not the same lineage. If it is, pick a different vendor for the seat — you have the whole
+catalogue. This only matters when the caller shares that lineage too, since one verifier serves a
+request and the rest are failover.
+
+This is a known limitation, pinned by tests rather than left to rot. Closing it properly means
+checking lineage at **request** time, where the caller's own model id is available; a construction-
+time check would have to refuse configurations that are perfectly sound for other callers.
 | `PRISM_TRUSTED_PROXIES` | Comma-separated CIDRs; honor `X-Forwarded-For` only from these peers (default empty = none). |
 | `PRISM_MAX_ARTIFACT_BYTES` | HTTP artifact size cap (default 256 KiB). |
 

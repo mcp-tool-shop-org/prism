@@ -13,7 +13,12 @@ import asyncio
 import httpx
 import pytest
 
-from prism.core.routing import DEFAULT_ROUTING_MAP, FamilyRouter, with_openrouter
+from prism.core.routing import (
+    DEFAULT_ROUTING_MAP,
+    FamilyRouter,
+    resolve_routing_map,
+    with_openrouter,
+)
 from prism.core.setup import build_default_engine, build_providers_from_env
 from prism.core.types import ModelFamily
 from prism.providers.base import CompletionRequest, ProviderError
@@ -92,7 +97,17 @@ def _run(p):
         "x-ai/grok-2",
     ],
 )
-def test_lineage_guard_allows_distinct_families(model_id):
+def test_lineage_guard_allows_vendors_outside_the_blocklist(model_id):
+    """What the guard ACTUALLY checks: the vendor prefix is not in ``BLOCKED_VENDORS``.
+
+    This test used to be called ``..._allows_distinct_families`` and claimed these ids name families
+    distinct from every prism caller. That claim is not knowable from a model id and is false on
+    some rigs: ``qwen/...`` collides with a LOCAL seat pinned to qwen, ``meta-llama/...`` with one
+    pinned to llama, and ``nvidia/nemotron-*`` is itself llama-derived. Pruning the offenders would
+    only imply the survivors are safe — ``x-ai/grok-2``'s provenance is not public either. The
+    entries are fine; the CLAIM was wrong, so the claim is what changed. The gap the old name
+    papered over is pinned by ``TestKnownGapLabelIsNotLineage`` below.
+    """
     validate_openrouter_lineage(model_id)  # must not raise
 
 
@@ -117,10 +132,61 @@ def test_lineage_guard_blocks_bare_id_without_vendor():
         validate_openrouter_lineage("gpt-4o")  # no 'vendor/' prefix
 
 
-def test_blocked_vendors_cover_every_native_caller_lineage():
-    # Every family prism routes to natively (anthropic/openai/google + the LOCAL=mistral lineage)
-    # must be blocked from masquerading as OPENROUTER.
+def test_blocked_vendors_cover_every_default_caller_lineage():
+    # The lineages of the SHIPPED DEFAULT routing map — anthropic/openai/google natively, and
+    # mistral because LOCAL *defaults* to mistral-small:24b — must not masquerade as OPENROUTER.
+    # "Default" is load-bearing and is the whole limitation: see test_known_gap_* below.
     assert {"anthropic", "openai", "google", "mistral", "mistralai"} <= BLOCKED_VENDORS
+
+
+# --- the known gap (pinned, NOT endorsed) ---
+
+
+class TestKnownGapLabelIsNotLineage:
+    """Lock 1 compares family LABELS. ``local`` and ``openrouter`` are TRANSPORT labels.
+
+    For ANTHROPIC/OPENAI/GOOGLE a label IS a lineage claim, and the operator owns it. But prism
+    labels every Ollama model ``local`` and every gateway model ``openrouter``, so for those two the
+    lineage lives in the MODEL ID, not the family. ``BLOCKED_VENDORS`` patches exactly one instance
+    of that gap — it blocks ``mistral`` *because* LOCAL defaults to ``mistral-small:24b``.
+
+    The F-14 registry makes that default configurable, so the blocklist is a static snapshot of a
+    value the operator can move. It cannot work IN PRINCIPLE, not merely today: adding ``qwen``
+    would just open the same hole for the next model anyone pins.
+
+    These tests pin the CURRENT behavior so it is a documented limitation rather than a surprise.
+    They assert what prism DOES, not what it SHOULD do — if the request-time lineage check lands,
+    they should fail and be rewritten deliberately.
+    """
+
+    def test_guard_cannot_see_a_reconfigured_local_seat(self):
+        # The guard takes only the model id. Nothing in "qwen/qwen-2.5-72b-instruct" reveals that
+        # LOCAL was pinned to qwen, so it cannot refuse — it is not a bug in the guard, it is the
+        # guard being asked a question its inputs cannot answer.
+        validate_openrouter_lineage("qwen/qwen-2.5-72b-instruct")  # does NOT raise
+
+    def test_openrouter_can_verify_a_same_lineage_local_caller(self, monkeypatch):
+        """The collision end-to-end: a qwen producer 'cross-family'-verified by qwen.
+
+        Reachable from the handbook's own worked example (`--provider ollama --provider openrouter
+        --verifier-model local=qwen2.5:7b`) plus an OpenRouter qwen seat — both individually
+        reasonable settings. The operator does nothing wrong; the collision is emergent.
+        """
+        local_pin, or_seat = "qwen2.5:7b", "qwen/qwen-2.5-72b-instruct"
+        routing_map = with_openrouter(
+            resolve_routing_map(env={"PRISM_VERIFIER_MODEL_LOCAL": local_pin}), or_seat
+        )
+        router = FamilyRouter(routing_map=routing_map)
+        # A local producer + an OpenRouter seat, no native hosted keys.
+        route = router.select_verifier(
+            ModelFamily.LOCAL, available_families={"local", "openrouter"}
+        )
+
+        # Lock 1 is satisfied at the LABEL level — this is what prism records and reports...
+        assert route.family is ModelFamily.OPENROUTER
+        assert route.family is not ModelFamily.LOCAL
+        # ...while both seats are the same LINEAGE, which is what Lock 1 actually cares about.
+        assert "qwen" in local_pin and "qwen" in route.model_id
 
 
 # --- provider ---

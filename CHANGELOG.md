@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Documentation
+- **Lock 1's label-vs-lineage limitation is now stated, not implied** (docs + tests; no behavior
+  change). Lock 1 compares family **labels**, and the self-preference literature it rests on is
+  about **lineage**. Those coincide for `anthropic`/`openai`/`google`, whose label is a lineage claim
+  the operator owns — but `local` and `openrouter` are **transport** labels (prism tags every Ollama
+  model `local` and every gateway model `openrouter`), so per-seat identity there is the model id.
+  Two differently-labeled seats can be one lineage: a `local` seat pinned to `qwen2.5:7b` verified by
+  an OpenRouter seat at `qwen/qwen-2.5-72b-instruct` passes the family-difference check while the
+  guarantee it stands for does not hold. Both settings are individually reasonable; the collision is
+  emergent, which is why the guard cannot see it.
+  - `BLOCKED_VENDORS` patches exactly one instance of that gap, with a constant: `mistral` is blocked
+    *because* LOCAL **defaults** to `mistral-small:24b`. The F-14 registry makes that value
+    configurable, so the list is a static answer to a configurable question — it cannot work in
+    principle, only in the default configuration. Extending it (adding `qwen`, `llama`, …) moves the
+    hole rather than closing it, so the docstrings now say so explicitly.
+  - `validate_openrouter_lineage` no longer claims to refuse models "whose true lineage isn't
+    distinct from every prism caller" — not decidable from a model id. It documents what it does:
+    refuse a vendor that collides with a **default** lineage.
+  - `test_lineage_guard_allows_distinct_families` → `..._allows_vendors_outside_the_blocklist`. The
+    old name asserted a property of the model id that isn't knowable from it, and is false on some
+    rigs (`qwen/…`, `meta-llama/…`, and llama-derived `nvidia/nemotron-*`). The entries were never
+    the problem — the claim was — so the claim changed rather than the list.
+  - New `TestKnownGapLabelIsNotLineage` pins the gap end-to-end (a qwen caller routed to a qwen
+    OpenRouter seat) as executable documentation. It asserts what prism **does**, not what it should;
+    if the request-time check lands, it should fail and be rewritten deliberately.
+  - Handbook gains "What the lineage guard does and does not check", including what to do about it.
+  - The real fix — a request-time caller-vs-verifier lineage check — is **not** in this change. Only
+    at request time does `CallerContext.model_id` exist, which is the input a config-time guard
+    structurally lacks. A config-time check could only compare seat-vs-seat, a proxy: one verifier
+    serves a request (`verifier_models=[route.model_id]`), so two same-lineage seats collide only
+    when the *caller* shares the lineage — and failing construction on the proxy would refuse
+    deployments that are sound for every other caller.
+
 ### Fixed
 - **The F-14 verifier registry did not reach the `local-verifier` / `openrouter` caller rows.**
   The same bug class as the transport drift below, one layer in. `with_local_verifier` and
